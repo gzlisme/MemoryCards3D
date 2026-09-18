@@ -153,3 +153,59 @@ MemoryCards3D/
 ---
 
 *本文档由 AI 辅助整理，记录了从零到一开发一个 3D 小游戏的真实历程。*
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 7. 收尾修复（已完成）
+
+**问题一：每次点 Play 卡片位置一样**
+
+- **现象**：停止 Play 再重新 Play，9 张卡片的位置和上一局完全一样。
+- **根因**：洗牌只在 `SceneBuilder` 构建场景时随机了一次，结果被序列化进场景文件。每次 Play 加载的都是同一个固定布局。
+- **修复**：
+  - `GameManager.Start()` 里增加开局洗牌调用，每次游戏启动时重新随机。
+  - `SceneBuilder` 删除构建期洗牌块，卡片按 1-9 顺序落格，随机性统一归运行时负责。
+- **验证**：每次重新 Play，卡片位置都不同。
+
+**问题二：胜利后「再来一局」按钮没反应**
+
+- **现象**：玩到胜利后，点击「再来一局」按钮无响应。
+- **根因**：场景里缺少 `EventSystem`。uGUI 的按钮点击依赖 EventSystem 分发事件，没有它，按钮永远收不到点击。卡片点击走的是物理射线（`OnMouseDown`），不需要 EventSystem，所以游戏能玩，唯独按钮失效。
+- **修复**：`UIManager.BuildUI()` 里防御性创建 `EventSystem` + `StandaloneInputModule`（带 `using UnityEngine.EventSystems;`）。
+- **验证**：胜利后点击按钮，卡片翻回背面、重新洗牌、UI 重置，可以接着玩。
+
+**改动范围**
+
+仅 3 个文件，共 11 行新增、7 行删除：
+
+text
+
+```
+Assets/Editor/SceneBuilder.cs | 9 ++-------
+Assets/Scripts/GameManager.cs | 2 ++
+Assets/Scripts/UIManager.cs   | 7 +++++++
+```
+
+
+
+桌面、材质、灯光、阴影、翻牌动画、UI 布局零触碰。
+
+**验证结果**
+
+- batchmode 构建：完整标记链 BUILD_START → foundation → cards built → managers → BUILD_OK，真实退出码 0，零编译错误。
+- 冒烟测试回归：1/1 Passed——翻错换人、连翻 1→9、胜利、重开全流程断言全部通过。
+- 人工试玩：开局洗牌生效、再来一局按钮可用。
+
+**当前状态**：游戏已完整可玩，核心功能和交互全部正常。
