@@ -31,6 +31,8 @@ public class GameManager : MonoBehaviour
 
     void Start()
     {
+        // 开局洗牌：随机布局只发生在运行时（场景文件里是 1-9 顺序的确定性布局）
+        ShuffleCardPositions();
         // 开局先刷一次 UI：玩家1回合 / 请找：1 / 连对：0/9
         _ui?.RefreshAll(this);
     }

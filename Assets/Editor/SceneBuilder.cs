@@ -149,17 +149,12 @@ public static class SceneBuilder
         Object.DestroyImmediate(card);
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
 
-        // ---------- 4. 3x3 阵列：9个格位 + Fisher-Yates 乱序分配 ----------
+        // ---------- 4. 3x3 阵列：按 1-9 顺序落格（随机性归运行时，见 GameManager.Start） ----------
+        // 构建期不洗牌：场景保持确定性布局，开局由 GameManager 统一随机
         var slots = new List<Vector3>();
         for (int row = 0; row < 3; row++)
             for (int col = 0; col < 3; col++)
                 slots.Add(new Vector3((col - 1) * GridSpacing, CardThickness * 0.5f, (row - 1) * GridSpacing));
-        // 洗“格位顺序”：数字卡随机落位，每次构建布局都不同
-        for (int i = slots.Count - 1; i > 0; i--)
-        {
-            int j = Random.Range(0, i + 1);
-            (slots[i], slots[j]) = (slots[j], slots[i]);
-        }
 
         for (int digit = 1; digit <= 9; digit++)
         {

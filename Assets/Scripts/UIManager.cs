@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// UI管理器：
@@ -39,6 +40,12 @@ public class UIManager : MonoBehaviour
 
     private void BuildUI()
     {
+        // 事件系统：uGUI 点击事件的分发器。缺了它按钮永远收不到点击——
+        // 卡片的 OnMouseDown 走物理射线不受影响，但“再来一局”按钮必须靠它。
+        // 场景与构建工具都不创建 EventSystem，故由 UI 体系在此兜底（已存在则不重复建）。
+        if (FindObjectOfType<EventSystem>() == null)
+            new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+
         // ===== 根画布：铺在3D画面之上，随分辨率自适应缩放 =====
         var canvasGo = new GameObject("UICanvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
         var canvas = canvasGo.GetComponent<Canvas>();
