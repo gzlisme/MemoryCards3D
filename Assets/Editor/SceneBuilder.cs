@@ -58,7 +58,7 @@ public static class SceneBuilder
         floor.transform.localScale = new Vector3(30f, 0.2f, 30f);
         floor.transform.position = new Vector3(0f, -0.4f, 0f);
         floor.GetComponent<MeshRenderer>().sharedMaterial =
-            CreateSolidMaterial("FloorMat", new Color(0.13f, 0.13f, 0.17f), 0.05f);
+            CreateSolidMaterial("FloorMat", new Color(0.02f, 0.023f, 0.05f), 0.05f); // 近黑带蓝：衬托深色桌面
         floor.GetComponent<MeshRenderer>().shadowCastingMode =
             UnityEngine.Rendering.ShadowCastingMode.Off; // 地板不投影，省性能
 
@@ -68,7 +68,7 @@ public static class SceneBuilder
         // Cube 本体 1x1x1，靠缩放得到真实尺寸；位置让“桌面顶面”正好落在 y=0
         table.transform.localScale = new Vector3(TableWidth, TableThickness, TableDepth);
         table.transform.position = new Vector3(0f, -TableThickness * 0.5f, 0f);
-        table.GetComponent<MeshRenderer>().sharedMaterial = CreateWoodMaterial();
+        table.GetComponent<MeshRenderer>().sharedMaterial = CreateArenaMaterial();
 
         // ---------- 相机：固定正交俯视 ----------
         var camGo = new GameObject("MainCamera");
@@ -85,21 +85,38 @@ public static class SceneBuilder
         cam.nearClipPlane = 0.1f;
         cam.farClipPlane = 50f;
         cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0.08f, 0.08f, 0.12f, 1f);
+        cam.backgroundColor = new Color(0.04f, 0.045f, 0.10f, 1f); // 深蓝黑“竞技场房间”底色
 
         // ---------- 方向光（自然光）+ 环境 ----------
         var lightGo = new GameObject("SunLight");
         var light = lightGo.AddComponent<Light>();
         light.type = LightType.Directional;
         light.shadows = LightShadows.Soft;          // 实时软阴影：卡片在桌面上的投影靠它
-        light.intensity = 1.15f;
-        light.color = new Color(1f, 0.95f, 0.86f);  // 略偏暖，像午后日光
+        light.intensity = 1.3f;
+        light.color = new Color(0.78f, 0.86f, 1f);  // 冷白偏蓝：数字竞技场的“顶灯”
+        light.shadowStrength = 0.85f;               // 阴影浓度：深色桌面上也要保证投影可读
         // 斜着照：有角度才有明暗面和斜向投影，3D体积感靠这个
         lightGo.transform.rotation = Quaternion.Euler(50f, -35f, 0f);
 
         RenderSettings.sun = light;
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat; // 单一环境色，明暗可控
-        RenderSettings.ambientLight = new Color(0.30f, 0.32f, 0.37f);         // 偏暗偏冷，衬托暖主光
+        RenderSettings.ambientLight = new Color(0.20f, 0.22f, 0.32f);         // 深蓝紫基调的暗部环境光
+
+        // Android 质量档（Performant）默认关闭主光阴影——验收要求“卡片投影明显”，强制开启三档。
+        // URP14 的 supportsMainLightShadows 属性只读，序列化字段要走 SerializedObject 通道。
+        foreach (string urpPath in new[] { "Assets/Settings/URP-Performant.asset", "Assets/Settings/URP-Balanced.asset", "Assets/Settings/URP-HighFidelity.asset" })
+        {
+            var urp = AssetDatabase.LoadAssetAtPath<UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset>(urpPath);
+            if (urp == null) continue;
+            var so = new SerializedObject(urp);
+            var prop = so.FindProperty("m_MainLightShadowsSupported");
+            if (prop != null && !prop.boolValue)
+            {
+                prop.boolValue = true;
+                so.ApplyModifiedProperties();
+                EditorUtility.SetDirty(urp);
+            }
+        }
 
         Debug.Log("MC3D_STEP_OK: foundation built");
     }
@@ -366,39 +383,55 @@ public static class SceneBuilder
 
     // ================= 通用小工具 =================
 
-    /// 程序化木纹贴图 + 磨砂木材质（需求：桌面不能是纯色平面）
-    private static Material CreateWoodMaterial()
+    /// 竞技场桌面贴图：深蓝紫径向渐变 + 细网格线 + 淡冷色纤维痕 + 暗角（视觉升级：数字竞技场风）
+    private static Material CreateArenaMaterial()
     {
         const int size = 512;
         var tex = new Texture2D(size, size);
         var pixels = new Color[size * size];
+        var coreCol = new Color(0.22f, 0.13f, 0.48f);  // 中心：紫罗兰（提亮版，光照后紫色相清晰可读）
+        var edgeCol = new Color(0.035f, 0.05f, 0.13f); // 边缘：近黑蓝
+
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
-                float u = x / (float)size, v = y / (float)size;
-                // 木纹修正：噪声沿X（桌长方向）拉伸=纤维顺纹；细密高频线=年轮切面。
-                // 初版的拉伸轴写反了，纹理呈“竖向沙丘纹”。
-                float fiber = Mathf.PerlinNoise(u * 2.5f, v * 14f);
-                float fiber2 = Mathf.PerlinNoise(u * 6f, v * 36f);
-                float grain = Mathf.PerlinNoise(u * 30f, v * 160f);
-                float streak = Mathf.Sin((v * 22f + fiber * 2f) * Mathf.PI) * 0.5f + 0.5f;
-                float t = Mathf.Clamp01(streak * 0.5f + fiber * 0.25f + fiber2 * 0.15f + grain * 0.1f);
-                //Color c = Color.Lerp(new Color(0.36f, 0.24f, 0.14f), new Color(0.60f, 0.43f, 0.26f), t);
-				Color c = Color.Lerp(new Color(0.18f, 0.10f, 0.06f), new Color(0.32f, 0.19f, 0.11f), t);
-                pixels[y * size + x] = c;
+                float u = x / (float)(size - 1) - 0.5f;
+                float v = y / (float)(size - 1) - 0.5f;
+                float dist = Mathf.Sqrt(u * u + v * v);
+
+                // 1) 径向渐变：中心偏亮的紫，向边缘压到深蓝黑
+                Color col = Color.Lerp(coreCol, edgeCol, Mathf.Clamp01(dist * 1.7f));
+
+                // 2) 淡冷色纤维痕：沿X极拉伸的微噪声（保留一点旧木纹的质感层，几乎不可见）
+                col *= 1f + (Mathf.PerlinNoise(u * 4f, v * 40f) - 0.5f) * 0.06f;
+
+                // 3) 细网格线：每32px一条、2px宽；对比度按深底可见性校准（探针迭代2）
+                if (x % 32 == 0 || x % 32 == 1 || y % 32 == 0 || y % 32 == 1)
+                    col += new Color(0.02f, 0.10f, 0.14f, 0f);
+
+                // 4) 暗角：四角再压暗，把视线收向中心
+                float vig = Mathf.Clamp01(dist - 0.42f) / 0.29f;
+                col *= 1f - vig * vig * 0.22f;
+
+                pixels[y * size + x] = col;
             }
         }
         tex.SetPixels(pixels);
         tex.Apply();
 
-        string texPath = $"{ArtDir}/WoodTable.png";
+        // 旧版木纹资产清理（风格更替，不留死资产）
+        foreach (string old in new[] { $"{ArtDir}/WoodTable.png", $"{ArtDir}/WoodTableMat.mat" })
+            if (AssetDatabase.LoadAssetAtPath<Object>(old) != null)
+                AssetDatabase.DeleteAsset(old);
+
+        string texPath = $"{ArtDir}/ArenaDesk.png";
         File.WriteAllBytes(texPath, tex.EncodeToPNG());
         AssetDatabase.ImportAsset(texPath);
 
-        var mat = NewLitMaterial($"{ArtDir}/WoodTableMat.mat");
+        var mat = NewLitMaterial($"{ArtDir}/ArenaDeskMat.mat");
         mat.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
-        mat.SetFloat("_Smoothness", 0.12f); // 低光滑度=磨砂木面
+        mat.SetFloat("_Smoothness", 0.18f); // 微哑光，避免深色面反光变“塑料”
         AssetDatabase.SaveAssets();
         return mat;
     }

@@ -29,7 +29,10 @@ public static class RenderProbe
         var cam = camGo.AddComponent<Camera>();
         cam.enabled = false;
         SetupCam(cam, new Vector3(0f, 4.2f, 0f), 1.75f);
-        Render(cam, "D:/work/unity/_verify_overview.png", 2048);
+        Directory.CreateDirectory("D:/work/unity/_android_visual");
+        // 预热：batchmode 下首帧 cam.Render() 可能因 URP 着色器未就绪而输出废片（曾造成两次假阴性判定）
+        Render(cam, "D:/work/unity/_android_visual/00_warmup_discard.png", 256);
+        Render(cam, "D:/work/unity/_android_visual/01_desk_overview.png", 2048);
 
         // ---------- 3. 卡片5翻到正面朝上（游戏翻牌后玩家所见） ----------
         Card target = null;
@@ -40,7 +43,29 @@ public static class RenderProbe
             target.transform.rotation = Quaternion.identity;
             var pos = target.transform.position;
             SetupCam(cam, new Vector3(pos.x, pos.y + 1.2f, pos.z), 0.45f);
-            Render(cam, "D:/work/unity/_verify_faceup.png", 1024);
+            Render(cam, "D:/work/unity/_android_visual/01_desk_faceup5.png", 1024);
+            target.transform.rotation = Quaternion.Euler(180f, 0f, 0f); // 复原背面朝上（不保存，双保险）
+
+            // ---------- 3b. 场景原状下的背面特写（应显示土褐/竞技场背纹理） ----------
+            Card backCard = null;
+            foreach (var c in Object.FindObjectsOfType<Card>())
+                if (c.Value == 7) { backCard = c; break; }
+            if (backCard != null)
+            {
+                var bp = backCard.transform.position;
+                SetupCam(cam, new Vector3(bp.x, bp.y + 1.2f, bp.z), 0.45f);
+                Render(cam, "D:/work/unity/_android_visual/01_desk_back7.png", 1024);
+            }
+
+            // ---------- 3c. 三角形/贴图预算 ----------
+            int tri = 0;
+            foreach (var r in Object.FindObjectsOfType<MeshRenderer>())
+            {
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf != null && mf.sharedMesh != null) tri += mf.sharedMesh.triangles.Length / 3;
+            }
+            int texCount = AssetDatabase.FindAssets("t:Texture2D", new[] { "Assets/Art" }).Length;
+            Debug.Log($"MC3D_STATS triangles={tri} texturesInArt={texCount}");
             target.transform.rotation = Quaternion.Euler(180f, 0f, 0f); // 复原（不保存场景，双保险）
         }
 
@@ -61,7 +86,9 @@ public static class RenderProbe
 
     private static void Render(Camera cam, string path, int res)
     {
-        var rt = new RenderTexture(res, res, 24);
+        // 关键：Linear色彩空间项目里，RT必须按sRGB读写，截图才与Game视图所见一致；
+        // 否则PNG保存的是线性值，回看会系统性偏暗（视觉验收被误导）。
+        var rt = new RenderTexture(res, res, 24, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
         cam.targetTexture = rt;
         cam.Render();
         var prev = RenderTexture.active;

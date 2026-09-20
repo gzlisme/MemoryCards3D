@@ -34,6 +34,6 @@ public class CameraController : MonoBehaviour
         _cam.nearClipPlane = 0.1f;
         _cam.farClipPlane = 50f;
         _cam.clearFlags = CameraClearFlags.SolidColor;
-        _cam.backgroundColor = new Color(0.08f, 0.08f, 0.12f, 1f); // 桌面外的深色“房间”底色
+        _cam.backgroundColor = new Color(0.04f, 0.045f, 0.10f, 1f); // 桌面外的深蓝黑“竞技场”底色
     }
 }

@@ -1,6 +1,6 @@
 %YAML 1.1
 %TAG !u! tag:yousandi.cn,2023:
---- !u!114 &-8214151565542548429
+--- !u!114 &-1704969612329992738
 MonoBehaviour:
   m_ObjectHideFlags: 11
   m_CorrespondingSourceObject: {fileID: 0}
@@ -126,8 +126,8 @@ Material:
     - _WorkflowMode: 1
     - _ZWrite: 1
     m_Colors:
-    - _BaseColor: {r: 0.13, g: 0.13, b: 0.17, a: 1}
-    - _Color: {r: 0.12999997, g: 0.12999997, b: 0.16999996, a: 1}
+    - _BaseColor: {r: 0.02, g: 0.023, b: 0.05, a: 1}
+    - _Color: {r: 0.02, g: 0.023, b: 0.049999982, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
   m_BuildTextureStacks: []
