@@ -257,40 +257,58 @@ public static class SceneBuilder
 
     // ================= 程序化贴图 =================
 
-    /// 数字面贴图：奶油纸底 + 细噪点 + 棕色装饰环 + 七段数码管数字。
-    /// 顶面UV是我们自己布的圆盘（圆心=贴图中心），所以数字直接画在贴图正中央。
-    private static Texture2D GenerateFaceTexture(int digit)
+    /// 卡面贴图：深蓝黑底 + 圆头粗笔画霓虹数字（分档配色）+ 同色细环。
+    /// 数字笔画在 X∈[-0.5,0.5]、Y∈[-1,1] 网格上左右对称设计，
+    /// 居中由“笔画X包络中心=0”的数学验证保证（见日志 MC3D_DIGIT_CENTER），不是目测。
+    private static Texture2D GenerateFaceTexture(int digit, Color neon)
     {
-        const int size = 256;
+        const int size = 512;   // 512分辨率：特写下笔画边缘更锐利
         var px = new Color[size * size];
-        var cream = new Color(0.95f, 0.91f, 0.82f);
-        var ring = new Color(0.54f, 0.38f, 0.27f);
+        var deepBase = new Color(0.045f, 0.06f, 0.115f);   // 深蓝黑底
+        Vector2[][] strokes = ParseDigitStrokes(digit);
+
+        // ---- 居中的数学验证：所有笔画点的X最大包络（±笔画半宽）中心必须≈0 ----
+        const float coreW = 0.034f;                        // 笔画半宽（贴图归一化，≈8.7px）
+        float minX = float.MaxValue, maxX = float.MinValue;
+        foreach (var s in strokes)
+            foreach (var p in s)
+            {
+                minX = Mathf.Min(minX, p.x - coreW);
+                maxX = Mathf.Max(maxX, p.x + coreW);
+            }
+        float centerX = (minX + maxX) * 0.5f;
+        Debug.Log($"MC3D_DIGIT_CENTER value={digit} minX={minX:F4} maxX={maxX:F4} center={centerX:F4} " +
+                  (Mathf.Abs(centerX) < 0.005f ? "OK" : "OFF-CENTER!"));
 
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
-                // 以贴图中心为原点的归一化坐标
                 float u = x / (float)(size - 1) - 0.5f;
                 float v = y / (float)(size - 1) - 0.5f;
-                float dist = Mathf.Sqrt(u * u + v * v);
+                float r = Mathf.Sqrt(u * u + v * v);
 
-                // 纸底 + 细微噪点（纸而不是塑料的感觉）
-                float noise = (Mathf.PerlinNoise(x * 0.25f, y * 0.25f) - 0.5f) * 0.10f;
-                Color col = cream * (1f + noise);
-                // 边缘装饰环
-                if (Mathf.Abs(dist - 0.40f) < 0.028f) col = ring;
+                // 1) 深底 + 微噪
+                Color col = deepBase * (1f + (Mathf.PerlinNoise(x * 0.3f, y * 0.3f) - 0.5f) * 0.10f);
+
+                // 2) 同色细环（r=0.40，窄细、低亮度陪衬）
+                col = Color.Lerp(col, neon * 0.55f, Sstep(0.004f, 0f, Mathf.Abs(r - 0.40f)) * 0.75f);
+
+                // 3) 数字：点到笔画线段的最小距离 → 胶囊形粗笔画（自带圆头）+ 双层假发光
+                // 包围盒只在水平方向裁剪（垂直放开，否则上/下笔画的光晕会被矩形硬切出边框伪影）
+                float d = 1f;
+                if (u > -0.24f && u < 0.24f)
+                    d = MinDistToStrokes(strokes, u, v);
+                // 亮芯边缘用 Sstep 平滑过渡（硬阈值会在放大时出现锯齿块）
+                float coreA = Sstep(coreW, coreW * 0.55f, d);   // d小→1(芯内)，d大→0
+                float halo1 = Mathf.Clamp01(1f - (d - coreW) / 0.055f);
+                float halo2 = Mathf.Clamp01(1f - (d - coreW) / 0.13f);
+                Color withHalo = col + neon * (halo1 * 0.42f + halo2 * 0.10f);
+                col = Color.Lerp(withHalo, neon * 1.12f, coreA);
+
                 px[y * size + x] = col;
             }
         }
-
-        // 数字画在贴图正中央（顶面UV圆盘的圆心）
-        float cx = (size - 1) * 0.5f;
-        float cy = (size - 1) * 0.5f;
-        float span = size - 1;
-
-        var ink = new Color(0.23f, 0.15f, 0.10f);
-        DrawDigit(px, size, digit, cx, cy, span * 0.17f, span * 0.32f, span * 0.085f, ink);
 
         var tex = new Texture2D(size, size);
         tex.SetPixels(px);
@@ -300,12 +318,16 @@ public static class SceneBuilder
 
     private static Material CreateFaceMaterial(int digit)
     {
+        // 三档配色：1-3 霓虹青 / 4-6 霓虹品红 / 7-9 金
+        Color neon = digit <= 3 ? new Color(0.05f, 0.85f, 1.00f)
+                  : digit <= 6 ? new Color(1.00f, 0.25f, 0.80f)
+                  : new Color(1.00f, 0.76f, 0.22f);
         string texPath = $"{ArtDir}/CardFace_{digit}.png";
-        File.WriteAllBytes(texPath, GenerateFaceTexture(digit).EncodeToPNG());
+        File.WriteAllBytes(texPath, GenerateFaceTexture(digit, neon).EncodeToPNG());
         AssetDatabase.ImportAsset(texPath);
         var mat = NewLitMaterial($"{ArtDir}/CardFaceMat_{digit}.mat");
         mat.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
-        mat.SetFloat("_Smoothness", 0.08f); // 纸面：低光滑度，不反光
+        mat.SetFloat("_Smoothness", 0.10f); // 微光泽衬托霓虹
         return mat;
     }
 
@@ -385,43 +407,65 @@ public static class SceneBuilder
         return mat;
     }
 
-    // ---- 七段数码管：经典计算器数字，纯代码画，无需任何字体 ----
-    // 段位定义：A顶杠 B右上 C右下 D底杠 E左下 F左上 G中杠
-    private static readonly bool[][] SegMap =
+    // ---- 圆头粗笔画数字：每个数字 = 若干笔画的折线序列（折点依次相连） ----
+    // 坐标系 X∈[-0.5,0.5]、Y∈[-1,1]，所有数字按左右对称设计（X包络=±0.5，居中由此数学保证）。
+    // 渲染原理：像素到线段距离 < 半宽 → 胶囊形笔画（自带圆头，无需额外画端点）。
+    private static readonly string[] DigitPaths =
     {
-        new[] { false, true,  true,  false, false, false, false }, // 1
-        new[] { true,  true,  false, true,  true,  false, true  }, // 2
-        new[] { true,  true,  true,  true,  false, false, true  }, // 3
-        new[] { false, true,  true,  false, false, true,  true  }, // 4
-        new[] { true,  false, true,  true,  false, true,  true  }, // 5
-        new[] { true,  false, true,  true,  true,  true,  true  }, // 6
-        new[] { true,  true,  true,  false, false, false, false }, // 7
-        new[] { true,  true,  true,  true,  true,  true,  true  }, // 8
-        new[] { true,  true,  true,  true,  false, true,  true  }, // 9
+        "0,-1 0,1",                                                                    // 1：居中单竖
+        "-0.5,1 0.5,1 0.5,0.55 -0.1,-0.35 -0.5,-0.6 0.5,-0.6",                        // 2：顶杠→右竖→斜杠→底杠
+        "-0.5,1 0.32,0.92 0.5,0.5 0.16,0.08 | 0.16,0.08 0.45,-0.05 0.5,-0.48 0.22,-0.9 -0.5,-1", // 3：双弧连笔
+        "-0.5,1 -0.5,-0.1 | -0.5,-0.1 0.5,-0.1 | 0.5,0.32 0.5,-1",                     // 4：左竖+中横+右竖
+        "-0.5,1 0.46,1 | -0.5,1 -0.5,0.15 | -0.5,0.15 0.3,0.08 0.5,-0.28 0.3,-0.85 -0.28,-1 -0.5,-0.72", // 5：顶杠+左竖+中横右碗
+        "0.5,1 -0.2,0.85 -0.5,0.3 -0.5,-0.35 -0.27,-0.85 0.1,-1 0.45,-0.75 0.5,-0.32 0.08,-0.1 -0.5,-0.1", // 6
+        "-0.5,1 0.5,1 0.05,-1",                                                        // 7：顶杠+对角线
+        "0,0.14 0.28,0.22 0.43,0.55 0.28,0.88 0,0.96 -0.28,0.88 -0.43,0.55 -0.28,0.22 0,0.14 | " +
+        "0,-0.02 0.32,-0.08 0.5,-0.5 0.32,-0.92 0,-0.98 -0.32,-0.92 -0.5,-0.5 -0.32,-0.08 0,-0.02", // 8：双环
+        "0,0.06 0.34,0.12 0.5,0.5 0.34,0.88 0,0.94 -0.34,0.88 -0.5,0.5 -0.34,0.12 0,0.06 | 0.5,0.5 0.5,-1", // 9：上圆环+右竖下延
     };
 
-    private static void DrawDigit(Color[] px, int size, int digit,
-        float cx, float cy, float halfW, float halfH, float th, Color c)
+    /// 解析数字笔画字符串 → 线段端点数组（缩放到贴图归一化：半宽0.15、半高0.31）
+    private static Vector2[][] ParseDigitStrokes(int digit)
     {
-        bool[] s = SegMap[digit - 1];
-        // 三根横杠：A上 / G中 / D下
-        if (s[0]) FillRect(px, size, cx - halfW, cy + halfH - th, cx + halfW, cy + halfH, c); // A
-        if (s[6]) FillRect(px, size, cx - halfW, cy - th * 0.5f, cx + halfW, cy + th * 0.5f, c); // G
-        if (s[3]) FillRect(px, size, cx - halfW, cy - halfH, cx + halfW, cy - halfH + th, c); // D
-        // 四根竖条：F左上 / E左下 / B右上 / C右下
-        if (s[5]) FillRect(px, size, cx - halfW, cy, cx - halfW + th, cy + halfH, c);         // F
-        if (s[4]) FillRect(px, size, cx - halfW, cy - halfH, cx - halfW + th, cy, c);         // E
-        if (s[1]) FillRect(px, size, cx + halfW - th, cy, cx + halfW, cy + halfH, c);         // B
-        if (s[2]) FillRect(px, size, cx + halfW - th, cy - halfH, cx + halfW, cy, c);         // C
+        var parts = DigitPaths[digit - 1].Split(new[] { '|' }, System.StringSplitOptions.RemoveEmptyEntries);
+        var strokes = new Vector2[parts.Length][];
+        for (int i = 0; i < parts.Length; i++)
+        {
+            var pts = parts[i].Trim().Split(' ');
+            var list = new List<Vector2>(pts.Length);
+            foreach (var p in pts)
+            {
+                var xy = p.Split(',');
+                float sx = float.Parse(xy[0], System.Globalization.CultureInfo.InvariantCulture) * 0.30f;
+                float sy = float.Parse(xy[1], System.Globalization.CultureInfo.InvariantCulture) * 0.31f;
+                list.Add(new Vector2(sx, sy));
+            }
+            strokes[i] = list.ToArray();
+        }
+        return strokes;
     }
 
-    private static void FillRect(Color[] px, int size, float x0, float y0, float x1, float y1, Color c)
+    /// 像素到该数字所有笔画线段的最小距离（< 半宽即在笔画内）
+    private static float MinDistToStrokes(Vector2[][] strokes, float u, float v)
     {
-        int ix0 = Mathf.Max(0, Mathf.FloorToInt(x0)), ix1 = Mathf.Min(size - 1, Mathf.CeilToInt(x1));
-        int iy0 = Mathf.Max(0, Mathf.FloorToInt(y0)), iy1 = Mathf.Min(size - 1, Mathf.CeilToInt(y1));
-        for (int y = iy0; y <= iy1; y++)
-            for (int x = ix0; x <= ix1; x++)
-                px[y * size + x] = c;
+        float best = float.MaxValue;
+        foreach (var s in strokes)
+            for (int i = 0; i < s.Length - 1; i++)
+            {
+                float d = DistToSeg(u, v, s[i].x, s[i].y, s[i + 1].x, s[i + 1].y);
+                if (d < best) best = d;
+            }
+        return best;
+    }
+
+    /// 点到线段的距离（标准投影截断法）
+    private static float DistToSeg(float px, float py, float ax, float ay, float bx, float by)
+    {
+        float abx = bx - ax, aby = by - ay;
+        float t = ((px - ax) * abx + (py - ay) * aby) / (abx * abx + aby * aby);
+        t = Mathf.Clamp01(t);
+        float dx = ax + abx * t - px, dy = ay + aby * t - py;
+        return Mathf.Sqrt(dx * dx + dy * dy);
     }
 
     /// GLSL 式 smoothstep：x<=edge0 返回0，x>=edge1 返回1，中间平滑过渡（支持 edge1<edge0 反向）
