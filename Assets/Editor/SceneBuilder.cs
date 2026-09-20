@@ -309,23 +309,66 @@ public static class SceneBuilder
         return mat;
     }
 
-    /// 背面贴图：土褐色纸壳 + 噪点 + 同心压纹（粗糙质感）
+    /// 霓虹卡背贴图：深蓝黑底 + 青→品红渐变霓虹环（光晕=贴图假Bloom）+ 星点 + 内部微波纹
     private static Material CreateBackMaterial()
     {
         const int size = 256;
         var px = new Color[size * size];
-        var baseCol = new Color(0.54f, 0.385f, 0.265f); // 土褐色
+        var cyan = new Color(0.05f, 0.85f, 1.00f);        // 霓虹青
+        var magenta = new Color(1.00f, 0.25f, 0.80f);     // 霓虹品红
+        var baseIn = new Color(0.028f, 0.04f, 0.085f);    // 中心深蓝黑
+        var baseOut = new Color(0.07f, 0.105f, 0.185f);   // 近环处稍亮（引导视线到环）
+
+        // 星点：固定种子的确定性伪随机位置（所有卡背一致，重复构建不变）
+        var rng = new System.Random(20260921);
+        var stars = new Vector2[16];
+        for (int i = 0; i < stars.Length; i++)
+        {
+            float sx, sy;
+            do { sx = (float)rng.NextDouble() - 0.5f; sy = (float)rng.NextDouble() - 0.5f; }
+            while (sx * sx + sy * sy > 0.09f);            // 只落在内部区域
+            stars[i] = new Vector2(sx, sy);
+        }
+
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
                 float u = x / (float)(size - 1) - 0.5f;
                 float v = y / (float)(size - 1) - 0.5f;
-                float dist = Mathf.Sqrt(u * u + v * v);
-                float noise = (Mathf.PerlinNoise(x * 0.18f, y * 0.18f) - 0.5f) * 0.18f;
-                float rings = Mathf.Sin(dist * 55f) * 0.05f; // 同心环模拟压制纸纹
-                float t = Mathf.Clamp01(0.5f + noise + rings);
-                px[y * size + x] = Color.Lerp(baseCol * 0.82f, baseCol * 1.12f, t);
+                float r = Mathf.Sqrt(u * u + v * v);
+                float ang = Mathf.Atan2(v, u);
+
+                // 1) 底色：中心暗，向霓虹环渐亮
+                Color col = Color.Lerp(baseIn, baseOut, Mathf.Clamp01(r / 0.40f));
+
+                // 2) 内部微波纹：极淡的“能量涟漪”
+                col += new Color(0.015f, 0.04f, 0.06f, 0f) *
+                       (Mathf.Sin(r * 46f) * 0.5f + 0.5f) * Mathf.Clamp01(0.40f - r);
+
+                // 3) 霓虹渐变环：r=0.40，颜色随角度 青↔品红 流动；双层结构=亮芯+环体
+                // 注意：Mathf.SmoothStep 是插值函数(from,to,t)，不是GLSL的smoothstep(edge0,edge1,x)！
+                // 曾误用导致环遮罩恒≈0，环只剩光晕在撑（亮度只有设计值的30%）。
+                float ringMask = Sstep(0.016f, 0f, Mathf.Abs(r - 0.40f)); // 环体（宽）
+                float coreMask = Sstep(0.006f, 0f, Mathf.Abs(r - 0.40f)); // 灯管芯（窄，过曝）
+                Color neon = Color.Lerp(cyan, magenta, Mathf.Sin(ang) * 0.5f + 0.5f);
+                col = Color.Lerp(col, neon, ringMask * 0.85f);
+                col = Color.Lerp(col, neon * 1.15f, coreMask); // 芯比环体再亮一档→“灯管”感
+
+                // 4) 环光晕：宽幅低亮叠在环两侧——贴图假Bloom（不花运行时性能）
+                float glow = Mathf.Clamp01(1f - Mathf.Abs(r - 0.40f) / 0.11f) * 0.30f;
+                col += neon * glow * (1f - ringMask);
+
+                // 5) 星点：青白色小亮点
+                for (int s = 0; s < stars.Length; s++)
+                {
+                    float dx = u - stars[s].x, dy = v - stars[s].y;
+                    float d = Mathf.Sqrt(dx * dx + dy * dy);
+                    const float starR = 0.013f;
+                    if (d < starR) col += new Color(0.55f, 0.85f, 1.05f, 0f) * (1f - d / starR);
+                }
+
+                px[y * size + x] = col;
             }
         }
         var tex = new Texture2D(size, size);
@@ -338,7 +381,7 @@ public static class SceneBuilder
 
         var mat = NewLitMaterial($"{ArtDir}/CardBackMat.mat");
         mat.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
-        mat.SetFloat("_Smoothness", 0.05f); // 硬纸壳：几乎不反光
+        mat.SetFloat("_Smoothness", 0.10f); // 微光泽衬托霓虹，仍远离“塑料感”
         return mat;
     }
 
@@ -379,6 +422,14 @@ public static class SceneBuilder
         for (int y = iy0; y <= iy1; y++)
             for (int x = ix0; x <= ix1; x++)
                 px[y * size + x] = c;
+    }
+
+    /// GLSL 式 smoothstep：x<=edge0 返回0，x>=edge1 返回1，中间平滑过渡（支持 edge1<edge0 反向）
+    /// Unity 的 Mathf.SmoothStep(from,to,t) 是插值函数，语义完全不同，勿混用！
+    private static float Sstep(float edge0, float edge1, float x)
+    {
+        float t = Mathf.Clamp01((x - edge0) / (edge1 - edge0));
+        return t * t * (3f - 2f * t);
     }
 
     // ================= 通用小工具 =================

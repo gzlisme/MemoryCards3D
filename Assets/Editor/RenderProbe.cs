@@ -32,7 +32,7 @@ public static class RenderProbe
         Directory.CreateDirectory("D:/work/unity/_android_visual");
         // 预热：batchmode 下首帧 cam.Render() 可能因 URP 着色器未就绪而输出废片（曾造成两次假阴性判定）
         Render(cam, "D:/work/unity/_android_visual/00_warmup_discard.png", 256);
-        Render(cam, "D:/work/unity/_android_visual/01_desk_overview.png", 2048);
+        Render(cam, "D:/work/unity/_android_visual/02_back_overview.png", 2048);
 
         // ---------- 3. 卡片5翻到正面朝上（游戏翻牌后玩家所见） ----------
         Card target = null;
@@ -43,7 +43,7 @@ public static class RenderProbe
             target.transform.rotation = Quaternion.identity;
             var pos = target.transform.position;
             SetupCam(cam, new Vector3(pos.x, pos.y + 1.2f, pos.z), 0.45f);
-            Render(cam, "D:/work/unity/_android_visual/01_desk_faceup5.png", 1024);
+            Render(cam, "D:/work/unity/_android_visual/02_back_faceup5.png", 1024);
             target.transform.rotation = Quaternion.Euler(180f, 0f, 0f); // 复原背面朝上（不保存，双保险）
 
             // ---------- 3b. 场景原状下的背面特写（应显示土褐/竞技场背纹理） ----------
@@ -54,7 +54,7 @@ public static class RenderProbe
             {
                 var bp = backCard.transform.position;
                 SetupCam(cam, new Vector3(bp.x, bp.y + 1.2f, bp.z), 0.45f);
-                Render(cam, "D:/work/unity/_android_visual/01_desk_back7.png", 1024);
+                Render(cam, "D:/work/unity/_android_visual/02_back_closeup.png", 1024);
             }
 
             // ---------- 3c. 三角形/贴图预算 ----------
