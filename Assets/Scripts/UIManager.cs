@@ -6,7 +6,8 @@ using UnityEngine.UI;
 /// 1) 顶部信息栏：当前玩家 / 请找数字 / 连对计数
 /// 2) 胜利面板：遮罩 + 获胜玩家大字 + “再来一局”按钮
 /// 所有 UI 都在运行时用代码创建——不依赖场景里的序列化引用，重建场景也不怕“丢线”。
-/// 中文显示：引擎内置字体只有拉丁字符，所以加载操作系统字体（微软雅黑）做动态字体。
+/// 安卓适配：UI 文案为英文，统一使用引擎内置字体（LegacyRuntime.ttf，Arial 风格），
+/// 全平台显示一致，不再依赖 Windows 系统字体。
 public class UIManager : MonoBehaviour
 {
     private Text _turnText;            // “玩家1回合”
@@ -16,20 +17,15 @@ public class UIManager : MonoBehaviour
     private GameObject _victoryPanel;  // 胜利面板整体（默认隐藏）
     private Button _restartButton;     // 再来一局按钮
 
-    // 系统中文字体只加载一次，全局复用
-    private static Font _cnFont;
-    private static Font CnFont
+    // 内置字体只加载一次，全局复用（LegacyRuntime.ttf：引擎自带 Arial 风格，全平台可用）
+    private static Font _uiFont;
+    private static Font UiFont
     {
         get
         {
-            if (_cnFont == null)
-            {
-                // Windows 自带微软雅黑；万一加载失败，退回内置字体（仅保证英文可显示）
-                _cnFont = Font.CreateDynamicFontFromOSFont("Microsoft YaHei", 28);
-                if (_cnFont == null)
-                    _cnFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            }
-            return _cnFont;
+            if (_uiFont == null)
+                _uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            return _uiFont;
         }
     }
 
@@ -53,15 +49,16 @@ public class UIManager : MonoBehaviour
 
         var scaler = canvasGo.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920, 1080); // 以1080p为基准，任何分辨率等比缩放
+        scaler.referenceResolution = new Vector2(1920, 1080); // 以1080p为基准
+        scaler.matchWidthOrHeight = 1f; // Match Height：文字大小随屏高走，横屏手机各机型观感一致
 
         // ===== 顶部信息底板（半透明压暗，保证文字可读性） =====
         var bar = CreateBar(canvas.transform);
 
         // 三行文字：回合（最大最显眼） / 期待数字 / 连对计数
-        _turnText = CreateText(bar.transform, "玩家1回合", 46, new Vector2(0, -46), FontStyle.Bold);
-        _expectText = CreateText(bar.transform, "请找：1", 34, new Vector2(0, -104), FontStyle.Normal);
-        _countText = CreateText(bar.transform, "连对：0/9", 30, new Vector2(0, -146), FontStyle.Normal);
+        _turnText = CreateText(bar.transform, "Player 1's Turn", 46, new Vector2(0, -46), FontStyle.Bold);
+        _expectText = CreateText(bar.transform, "Find: 1", 34, new Vector2(0, -104), FontStyle.Normal);
+        _countText = CreateText(bar.transform, "Streak: 0/9", 30, new Vector2(0, -146), FontStyle.Normal);
 
         // ===== 胜利面板：全屏遮罩 + 大字 + 再来一局按钮（默认隐藏） =====
         BuildVictoryPanel(canvas.transform);
@@ -71,15 +68,15 @@ public class UIManager : MonoBehaviour
     public void RefreshAll(GameManager gm)
     {
         if (_turnText == null) return;
-        _turnText.text = "玩家" + gm.CurrentPlayer + "回合";
-        _expectText.text = "请找：" + gm.ExpectedNumber;
-        _countText.text = "连对：" + gm.CorrectCount + "/" + GameManager.TotalCards;
+        _turnText.text = "Player " + gm.CurrentPlayer + "'s Turn";
+        _expectText.text = "Find: " + gm.ExpectedNumber;
+        _countText.text = "Streak: " + gm.CorrectCount + "/" + GameManager.TotalCards;
     }
 
     /// 显示胜利画面（GameManager 判定胜利时调用，把自己传进来给按钮接线）
     public void ShowVictory(int winnerPlayer, GameManager gm)
     {
-        _victoryText.text = "玩家" + winnerPlayer + " 获胜！";
+        _victoryText.text = "Player " + winnerPlayer + " Wins!";
         _victoryPanel.SetActive(true);
 
         // 先清空旧监听，防止重复注册；按钮点击 = 重开一局
@@ -106,7 +103,7 @@ public class UIManager : MonoBehaviour
 
         var rect = go.GetComponent<RectTransform>();
         rect.SetParent(parent, false);
-        rect.anchorMin = new Vector2(0.5f, 1f);   // 顶边中点向右上展开
+        rect.anchorMin = new Vector2(0f, 1f);   // 顶边全宽（修复：原为0.5-1只覆盖右半屏，文字偏在75%屏宽处）
         rect.anchorMax = new Vector2(1f, 1f);
         rect.pivot = new Vector2(0.5f, 1f);
         rect.anchoredPosition = new Vector2(0, -10);
@@ -118,7 +115,7 @@ public class UIManager : MonoBehaviour
     {
         var go = new GameObject("Txt_" + initial, typeof(Text));
         var t = go.GetComponent<Text>();
-        t.font = CnFont;
+        t.font = UiFont;
         t.fontSize = size;
         t.fontStyle = style;
         t.alignment = TextAnchor.MiddleCenter;
@@ -150,7 +147,7 @@ public class UIManager : MonoBehaviour
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
         // ---- 获胜大字（金色） ----
-        _victoryText = CreateText(panel.transform, "玩家1 获胜！", 72, new Vector2(0, -330), FontStyle.Bold);
+        _victoryText = CreateText(panel.transform, "Player 1 Wins!", 72, new Vector2(0, -330), FontStyle.Bold);
         _victoryText.color = new Color(1f, 0.84f, 0.4f);
 
         // ---- 再来一局按钮 ----
@@ -166,7 +163,7 @@ public class UIManager : MonoBehaviour
         _restartButton = btnGo.GetComponent<Button>();
 
         // 按钮文字：作为子物体四向拉伸铺满按钮
-        var btnLabel = CreateText(btnGo.transform, "再来一局", 40, Vector2.zero, FontStyle.Bold);
+        var btnLabel = CreateText(btnGo.transform, "Play Again", 40, Vector2.zero, FontStyle.Bold);
         var lbl = btnLabel.rectTransform;
         lbl.anchorMin = Vector2.zero;
         lbl.anchorMax = Vector2.one;
