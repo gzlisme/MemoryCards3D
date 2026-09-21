@@ -43,3 +43,9 @@ _fix_*.txt
 *.aab
 *.unitypackage
 *.app
+
+# ===== TypeSafe Skill & Jev 配置（本地工具与密钥，不入库） =====
+.agents/
+skills-lock.json
+_jev_usage.log
+.env
