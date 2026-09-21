@@ -831,4 +831,96 @@ public static class SceneBuilder
         Debug.Log("MC3D_JEV_TEST_RESULT hasError=" + hasError + " isSuccess=" + isSuccess);
         Debug.Log("MC3D_JEV_TEST_DONE");
     }
+
+    // ================= Jev 集成（阶段B：独立验证方法，不嵌入 BuildAll） =================
+
+    /// <summary>
+    /// 确定要读的构建日志路径。三级兜底：
+    ///   1) 环境变量 JEV_BUILD_LOG
+    ///   2) 命令行 --jev-build-log &lt;path&gt;
+    ///   3) 固定路径 D:/work/unity/_build_latest.log（命中时打 warning 防陈旧日志）
+    /// 返回 null 表示全都失败。
+    /// </summary>
+    private static string ResolveBuildLogPath(out string source)
+    {
+        // 1) 环境变量
+        string envPath = System.Environment.GetEnvironmentVariable("JEV_BUILD_LOG");
+        if (!string.IsNullOrEmpty(envPath) && System.IO.File.Exists(envPath))
+        {
+            source = "ENV";
+            return envPath;
+        }
+
+        // 2) 命令行 --jev-build-log
+        var args = System.Environment.GetCommandLineArgs();
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i] == "--jev-build-log" && System.IO.File.Exists(args[i + 1]))
+            {
+                source = "CLI";
+                return args[i + 1];
+            }
+        }
+
+        // 3) 固定兜底
+        string fallback = "D:/work/unity/_build_latest.log";
+        if (System.IO.File.Exists(fallback))
+        {
+            Debug.LogWarning("MC3D_JEV_VERIFY: using FALLBACK log path, may be stale: " + fallback);
+            source = "FALLBACK";
+            return fallback;
+        }
+
+        source = "NONE";
+        return null;
+    }
+
+    [MenuItem("Tools/MemoryCards3D/Verify Build with Jev")]
+    public static void VerifyJev()
+    {
+        Debug.Log("MC3D_JEV_VERIFY_START");
+
+        // 1) 确定日志路径（三级兜底 + 来源级别）
+        string source;
+        string logPath = ResolveBuildLogPath(out source);
+        if (logPath == null)
+        {
+            Debug.LogWarning("MC3D_JEV_VERIFY_SKIP: no log found");
+            Debug.Log("MC3D_JEV_VERIFY_DONE");
+            return;
+        }
+        Debug.Log("MC3D_JEV_VERIFY_LOG_PATH: " + logPath + " (source=" + source + ")");
+
+        // 2) 构造 state（复用阶段A的 BuildJevState）
+        string state = BuildJevState(logPath);
+        if (state == null)
+        {
+            Debug.LogWarning("MC3D_JEV_VERIFY_SKIP: state build failed");
+            Debug.Log("MC3D_JEV_VERIFY_DONE");
+            return;
+        }
+        Debug.Log("MC3D_JEV_VERIFY_STATE_LEN: " + state.Length);
+
+        // 3) 调用 Jev（失败不阻塞）
+        float? hasError = null;
+        float? isSuccess = null;
+        try
+        {
+            hasError = JevHelper.AskNoul(state, "Does the log contain compile errors or exceptions?");
+            isSuccess = JevHelper.AskNoul(state, "If no errors, is the build successful?");
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning("MC3D_JEV_VERIFY: Jev call failed - " + ex.Message);
+        }
+
+        // 4) 根据置信度记录结果（不阻塞）
+        if (hasError.HasValue && hasError.Value >= 0.90f)
+            Debug.LogWarning("MC3D_JEV_VERIFY: HIGH ERROR PROBABILITY " + hasError.Value.ToString("F2"));
+        if (isSuccess.HasValue && isSuccess.Value >= 0.90f)
+            Debug.Log("MC3D_JEV_VERIFY: BUILD SUCCESS confirmed " + isSuccess.Value.ToString("F2"));
+
+        Debug.Log("MC3D_JEV_VERIFY_RESULT hasError=" + hasError + " isSuccess=" + isSuccess);
+        Debug.Log("MC3D_JEV_VERIFY_DONE");
+    }
 }
