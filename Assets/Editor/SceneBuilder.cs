@@ -257,29 +257,101 @@ public static class SceneBuilder
 
     // ================= 程序化贴图 =================
 
-    /// 卡面贴图：深蓝黑底 + 圆头粗笔画霓虹数字（分档配色）+ 同色细环。
-    /// 数字笔画在 X∈[-0.5,0.5]、Y∈[-1,1] 网格上左右对称设计，
-    /// 居中由“笔画X包络中心=0”的数学验证保证（见日志 MC3D_DIGIT_CENTER），不是目测。
+    /// 卡面贴图：深蓝黑底 + 字体渲染霓虹数字（分档配色）+ 同色细环。
+    /// 数字用引擎内置字体 LegacyRuntime.ttf 渲染：两遍校准字号（墨迹高度=贴图高70%）→
+    /// 字体图集提取字形像素 → 度量包络居中 → alpha 遮罩两级模糊发光。
+    /// 居中与高度全部来自字体度量数据（数学保证），见日志 MC3D_DIGIT_CENTER。
     private static Texture2D GenerateFaceTexture(int digit, Color neon)
     {
-        const int size = 512;   // 512分辨率：特写下笔画边缘更锐利
-        var px = new Color[size * size];
-        var deepBase = new Color(0.045f, 0.06f, 0.115f);   // 深蓝黑底
-        Vector2[][] strokes = ParseDigitStrokes(digit);
+        const int size = 512;
+        const int rtRes = 1024;    // 字形渲染临时 RT 边长
+        // ---------- 1. TextMesh 渲染数字到透明 RT（白字，alpha=覆盖度） ----------
+        // 弃用字体图集 API（RequestCharactersInTexture/GetCharacterInfo 在大字号下 uv 异常），
+        // 改走 TextMesh+相机渲染：与游戏 UI 同一渲染路径，最稳。
+        var textGo = new GameObject("FontDigit");
+        textGo.hideFlags = HideFlags.HideAndDontSave;
+        var tm = textGo.AddComponent<TextMesh>();
+        tm.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        textGo.GetComponent<MeshRenderer>().sharedMaterial = tm.font.material; // 代码创建必须手动挂字体材质
+        tm.fontSize = 100;
+        tm.characterSize = 1f;
+        tm.anchor = TextAnchor.MiddleCenter;
+        tm.alignment = TextAlignment.Center;
+        tm.color = Color.white;
+        tm.text = digit.ToString();
 
-        // ---- 居中的数学验证：所有笔画点的X最大包络（±笔画半宽）中心必须≈0 ----
-        const float coreW = 0.034f;                        // 笔画半宽（贴图归一化，≈8.7px）
-        float minX = float.MaxValue, maxX = float.MinValue;
-        foreach (var s in strokes)
-            foreach (var p in s)
+        var camGo = new GameObject("FontCam");
+        camGo.hideFlags = HideFlags.HideAndDontSave;
+        var cam = camGo.AddComponent<Camera>();
+        cam.enabled = false;
+        cam.orthographic = true;
+        cam.orthographicSize = 8f;                        // 视野 16×16 单位，100px 字形绰绰有余
+        cam.nearClipPlane = 0.1f;
+        cam.farClipPlane = 50f;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);  // 透明底：alpha 即字形覆盖度
+        cam.transform.position = new Vector3(0f, 0f, -3f); // 默认朝 +Z 看，正对文字
+
+        var rt = RenderTexture.GetTemporary(rtRes, rtRes, 24, RenderTextureFormat.ARGB32);
+        cam.targetTexture = rt;
+        cam.Render();
+        var prevActive = RenderTexture.active;
+        RenderTexture.active = rt;
+        var raw = new Texture2D(rtRes, rtRes, TextureFormat.RGBA32, false);
+        raw.ReadPixels(new Rect(0, 0, rtRes, rtRes), 0, 0);
+        raw.Apply();
+        RenderTexture.active = prevActive;
+        cam.targetTexture = null;
+        RenderTexture.ReleaseTemporary(rt);
+        Object.DestroyImmediate(camGo);
+        Object.DestroyImmediate(textGo);
+
+        // ---------- 2. 量墨迹包围盒（alpha > 0.1） ----------
+        var rawPx = raw.GetPixels();
+        int minX = rtRes, maxX = -1, minY = rtRes, maxY = -1;
+        for (int y = 0; y < rtRes; y++)
+            for (int x = 0; x < rtRes; x++)
+                if (rawPx[y * rtRes + x].a > 0.1f)
+                {
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (y < minY) minY = y; if (y > maxY) maxY = y;
+                }
+        if (maxX < 0)
+        {
+            Debug.LogError($"MC3D_FONT_FAIL: digit {digit} 字形未渲染（TextMesh 无输出）");
+            // 兜底：返回纯深底贴图（游戏仍可运行，数字缺失待人工介入）
+            var fallback = new Texture2D(size, size);
+            var fb = new Color[size * size];
+            for (int i = 0; i < fb.Length; i++) fb[i] = new Color(0.045f, 0.06f, 0.115f);
+            fallback.SetPixels(fb); fallback.Apply();
+            return fallback;
+        }
+        int inkW = maxX - minX + 1, inkH = maxY - minY + 1;
+
+        // ---------- 3. 重采样墨迹区域 → 70% 高度、等比宽、居中放入 512² ----------
+        int targetH = (int)(size * 0.70f);           // 358
+        int targetW = Mathf.Max(1, Mathf.RoundToInt(inkW * (float)targetH / inkH));
+        int dstX = (size - targetW) / 2, dstY = (size - targetH) / 2;
+        var mask = new float[size * size];              // 重采样后的 alpha 遮罩（0..1）
+        for (int ty = 0; ty < targetH; ty++)
+        {
+            int sy = minY + (int)((ty + 0.5f) * inkH / targetH);
+            for (int tx = 0; tx < targetW; tx++)
             {
-                minX = Mathf.Min(minX, p.x - coreW);
-                maxX = Mathf.Max(maxX, p.x + coreW);
+                int sx = minX + (int)((tx + 0.5f) * inkW / targetW);
+                mask[(dstY + ty) * size + (dstX + tx)] = rawPx[sy * rtRes + sx].a;
             }
-        float centerX = (minX + maxX) * 0.5f;
-        Debug.Log($"MC3D_DIGIT_CENTER value={digit} minX={minX:F4} maxX={maxX:F4} center={centerX:F4} " +
-                  (Mathf.Abs(centerX) < 0.005f ? "OK" : "OFF-CENTER!"));
+        }
+        Debug.Log($"MC3D_DIGIT_CENTER value={digit} inkBox={inkW}x{inkH} dst=({dstX},{dstY}) " +
+                  $"center=({dstX + targetW / 2f - (size - 1) / 2f:F1},{dstY + targetH / 2f - (size - 1) / 2f:F1})px");
 
+        // ---- 遮罩两级模糊 → 霓虹光晕（假Bloom，零运行时成本） ----
+        var halo1 = BoxBlur(mask, size, 18);
+        var halo2 = BoxBlur(mask, size, 44);
+
+        // ---- 合成：深底 + 细环 + 光晕 + 过曝字芯 ----
+        var px = new Color[size * size];
+        var deepBase = new Color(0.045f, 0.06f, 0.115f);
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
@@ -287,6 +359,7 @@ public static class SceneBuilder
                 float u = x / (float)(size - 1) - 0.5f;
                 float v = y / (float)(size - 1) - 0.5f;
                 float r = Mathf.Sqrt(u * u + v * v);
+                int i = y * size + x;
 
                 // 1) 深底 + 微噪
                 Color col = deepBase * (1f + (Mathf.PerlinNoise(x * 0.3f, y * 0.3f) - 0.5f) * 0.10f);
@@ -294,19 +367,13 @@ public static class SceneBuilder
                 // 2) 同色细环（r=0.40，窄细、低亮度陪衬）
                 col = Color.Lerp(col, neon * 0.55f, Sstep(0.004f, 0f, Mathf.Abs(r - 0.40f)) * 0.75f);
 
-                // 3) 数字：点到笔画线段的最小距离 → 胶囊形粗笔画（自带圆头）+ 双层假发光
-                // 包围盒只在水平方向裁剪（垂直放开，否则上/下笔画的光晕会被矩形硬切出边框伪影）
-                float d = 1f;
-                if (u > -0.24f && u < 0.24f)
-                    d = MinDistToStrokes(strokes, u, v);
-                // 亮芯边缘用 Sstep 平滑过渡（硬阈值会在放大时出现锯齿块）
-                float coreA = Sstep(coreW, coreW * 0.55f, d);   // d小→1(芯内)，d大→0
-                float halo1 = Mathf.Clamp01(1f - (d - coreW) / 0.055f);
-                float halo2 = Mathf.Clamp01(1f - (d - coreW) / 0.13f);
-                Color withHalo = col + neon * (halo1 * 0.42f + halo2 * 0.10f);
-                col = Color.Lerp(withHalo, neon * 1.12f, coreA);
+                // 3) 两级霓虹光晕（假Bloom）
+                col += neon * (halo1[i] * 0.42f + halo2[i] * 0.12f);
 
-                px[y * size + x] = col;
+                // 4) 字形本体：过曝霓虹芯（RT 渲染自带 AA，边缘天然平滑）
+                if (mask[i] > 0f) col = Color.Lerp(col, neon * 1.12f, mask[i]);
+
+                px[i] = col;
             }
         }
 
@@ -314,6 +381,57 @@ public static class SceneBuilder
         tex.SetPixels(px);
         tex.Apply();
         return tex;
+    }
+
+    /// 从纹理中截取一个矩形区域（直接 GetPixels 失败时经 RT 中转兜底）
+    private static Color[] GrabTextureRegion(Texture2D src, int gx, int gy, int gw, int gh)
+    {
+        try { return src.GetPixels(gx, gy, gw, gh); }
+        catch
+        {
+            var rt = RenderTexture.GetTemporary(src.width, src.height, 0);
+            var prev = RenderTexture.active;
+            Graphics.Blit(src, rt);
+            RenderTexture.active = rt;
+            var tmp = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false);
+            tmp.ReadPixels(new Rect(0, 0, src.width, src.height), 0, 0);
+            tmp.Apply();
+            RenderTexture.active = prev;
+            var px = tmp.GetPixels(gx, gy, gw, gh);
+            Object.DestroyImmediate(tmp);
+            RenderTexture.ReleaseTemporary(rt);
+            return px;
+        }
+    }
+
+    /// 分离式盒模糊 ×2（先横后竖，两轮≈高斯）
+    private static float[] BoxBlur(float[] src, int size, int radius)
+    {
+        var tmp = new float[size * size];
+        var dst = new float[size * size];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float sum = 0f; int n = 0;
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int xx = x + dx; if (xx < 0 || xx >= size) continue;
+                    sum += src[y * size + xx]; n++;
+                }
+                tmp[y * size + x] = sum / n;
+            }
+        for (int x = 0; x < size; x++)
+            for (int y = 0; y < size; y++)
+            {
+                float sum = 0f; int n = 0;
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    int yy = y + dy; if (yy < 0 || yy >= size) continue;
+                    sum += tmp[yy * size + x]; n++;
+                }
+                dst[y * size + x] = sum / n;
+            }
+        return dst;
     }
 
     private static Material CreateFaceMaterial(int digit)
