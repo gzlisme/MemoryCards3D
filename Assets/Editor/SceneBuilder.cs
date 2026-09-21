@@ -705,4 +705,130 @@ public static class SceneBuilder
         }
         return null;
     }
+
+    // ================= Jev 集成（阶段A：独立测试，不动 BuildAll） =================
+
+    /// <summary>
+    /// 从构建日志构造 Jev 的 state 字符串。
+    /// 结构：[terminal] + [markers] + [compile errors] + [errors] + [tail 20行]
+    /// 总长 ≤7000 字符（JevHelper 的 8000 硬截断只作最后保险）。
+    /// 绝不整段截断——硬截会丢末尾的 return code 行。
+    /// </summary>
+    private static string BuildJevState(string logPath)
+    {
+        if (!System.IO.File.Exists(logPath)) return null;
+
+        // 共享读：-logFile 指向的文件被编辑器日志写入器持锁，普通 ReadAllLines 会 Sharing violation（A3 实测）
+        var lines = ReadAllLinesShared(logPath);
+        var sb = new System.Text.StringBuilder();
+
+        // 1) terminal: 从末尾 50 行内找 return code
+        string terminal = "(not found)";
+        int scanStart = System.Math.Max(0, lines.Length - 50);
+        for (int i = lines.Length - 1; i >= scanStart; i--)
+        {
+            if (lines[i].Contains("return code"))
+            {
+                terminal = lines[i].Trim();
+                break;
+            }
+        }
+        sb.AppendLine("[terminal] " + terminal);
+
+        // 2) markers + errors
+        bool hasBuildOk = false;
+        int errorCsCount = 0;
+        var errorLines = new System.Collections.Generic.List<string>();
+        foreach (var line in lines)
+        {
+            if (line.Contains("MC3D_BUILD_OK")) hasBuildOk = true;
+            if (line.Contains("error CS"))
+            {
+                errorCsCount++;
+                if (errorLines.Count < 30)
+                    errorLines.Add(line.Length > 200 ? line.Substring(0, 200) : line);
+            }
+            else if ((line.Contains("Exception") || line.Contains("Aborting batchmode") || line.Contains("Build Failed"))
+                     && errorLines.Count < 30)
+            {
+                errorLines.Add(line.Length > 200 ? line.Substring(0, 200) : line);
+            }
+        }
+        sb.AppendLine("[markers] BUILD_OK=" + hasBuildOk);
+        sb.AppendLine("[compile errors] " + errorCsCount);
+
+        // 3) errors 段
+        if (errorLines.Count == 0)
+        {
+            sb.AppendLine("[errors] (none)");
+        }
+        else
+        {
+            sb.AppendLine("[errors]");
+            foreach (var e in errorLines) sb.AppendLine(e);
+        }
+
+        // 4) tail 20 行
+        sb.AppendLine("[tail]");
+        int tailStart = System.Math.Max(0, lines.Length - 20);
+        for (int i = tailStart; i < lines.Length; i++)
+        {
+            if (sb.Length > 7000) break;
+            sb.AppendLine(lines[i].Length > 200 ? lines[i].Substring(0, 200) : lines[i]);
+        }
+
+        // 5) 最后保险：硬截断到 7000
+        string result = sb.ToString();
+        if (result.Length > 7000) result = result.Substring(0, 7000);
+        return result;
+    }
+
+    /// 读取可能正被编辑器写入的日志文件：FileShare.ReadWrite 允许与日志写入器并发
+    private static string[] ReadAllLinesShared(string path)
+    {
+        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Open,
+            System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+        using (var sr = new System.IO.StreamReader(fs))
+        {
+            var list = new System.Collections.Generic.List<string>();
+            string line;
+            while ((line = sr.ReadLine()) != null) list.Add(line);
+            return list.ToArray();
+        }
+    }
+
+    [MenuItem("Tools/MemoryCards3D/Test Jev Integration")]
+    public static void TestJevIntegration()
+    {
+        Debug.Log("MC3D_JEV_TEST_START");
+
+        string consolePath = Application.consoleLogPath;
+        Debug.Log("MC3D_JEV_CONSOLE_PATH: " + consolePath);
+
+        // 优先命令行 -logFile，兜底固定路径
+        string logPath = null;
+        var args = System.Environment.GetCommandLineArgs();
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i] == "-logFile") { logPath = args[i + 1]; break; }
+        }
+        if (string.IsNullOrEmpty(logPath) || !System.IO.File.Exists(logPath))
+            logPath = "D:/work/unity/_font_pipeline_build_log.txt";
+
+        Debug.Log("MC3D_JEV_LOG_PATH: " + logPath);
+
+        string state = BuildJevState(logPath);
+        if (state == null)
+        {
+            Debug.LogError("MC3D_JEV_TEST: log file not found");
+            return;
+        }
+        Debug.Log("MC3D_JEV_STATE_LEN: " + state.Length);
+
+        float? hasError = JevHelper.AskNoul(state, "Does the log contain compile errors or exceptions?");
+        float? isSuccess = JevHelper.AskNoul(state, "If no errors, is the build successful?");
+
+        Debug.Log("MC3D_JEV_TEST_RESULT hasError=" + hasError + " isSuccess=" + isSuccess);
+        Debug.Log("MC3D_JEV_TEST_DONE");
+    }
 }
