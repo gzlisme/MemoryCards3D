@@ -43,7 +43,11 @@ public static class RenderProbe
             target.transform.rotation = Quaternion.identity;
             var pos = target.transform.position;
             SetupCam(cam, new Vector3(pos.x, pos.y + 1.2f, pos.z), 0.45f);
-            Render(cam, "D:/work/unity/_android_visual/03_face_faceup5.png", 1024);
+            // 预热 TMP GLOW_ON 变体：场景背面态的 warmup 渲染不到 TMP 正面（字面朝下被卡片遮挡），
+            // SDF shader 的 glow 变体若在首次正面渲染时才编译，URP 可能输出无 glow 的 fallback。
+            // 先丢弃式渲染一次（存项目根，不进 _android_visual 正式产物目录）。
+            Render(cam, "D:/work/unity/_tmp_warmup_discard.png", 256);
+            Render(cam, "D:/work/unity/_android_visual/08_tmp_face5.png", 1024);
             target.transform.rotation = Quaternion.Euler(180f, 0f, 0f); // 复原背面朝上（不保存，双保险）
 
             // ---------- 3b. 场景原状下的背面特写（应显示土褐/竞技场背纹理） ----------

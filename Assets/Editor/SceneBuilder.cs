@@ -188,6 +188,9 @@ public static class SceneBuilder
             var rmats = go.GetComponent<MeshRenderer>().sharedMaterials;
             rmats[1] = faceMats[digit - 1]; // 1=顶面
             go.GetComponent<MeshRenderer>().sharedMaterials = rmats;
+
+            // TMP 3D 数字子物体（B 方案：数字不再烘焙进贴图，根治图集渗色）
+            AttachTmpDigitToCard(go, digit);
         }
 
         Debug.Log("MC3D_STEP_OK: cards built");
@@ -257,103 +260,14 @@ public static class SceneBuilder
 
     // ================= 程序化贴图 =================
 
-    /// 卡面贴图：深蓝黑底 + 字体渲染霓虹数字（分档配色）+ 同色细环。
-    /// 数字用引擎内置字体 LegacyRuntime.ttf 渲染：两遍校准字号（墨迹高度=贴图高70%）→
-    /// 字体图集提取字形像素 → 度量包络居中 → alpha 遮罩两级模糊发光。
-    /// 居中与高度全部来自字体度量数据（数学保证），见日志 MC3D_DIGIT_CENTER。
+    /// 卡面贴图：深蓝黑底 + 微噪 + 同色细环（纯底图）。
+    /// B 方案（2026-09-22）：数字不再烘焙进贴图，由 TMP 3D 子物体承担（AttachTmpDigitToCard），
+    /// 从根上移除 TextMesh 动态字体图集渲染链路——渗色横线伪影不复存在。
     private static Texture2D GenerateFaceTexture(int digit, Color neon)
     {
         const int size = 512;
-        const int rtRes = 1024;    // 字形渲染临时 RT 边长
-        // ---------- 1. TextMesh 渲染数字到透明 RT（白字，alpha=覆盖度） ----------
-        // 弃用字体图集 API（RequestCharactersInTexture/GetCharacterInfo 在大字号下 uv 异常），
-        // 改走 TextMesh+相机渲染：与游戏 UI 同一渲染路径，最稳。
-        var textGo = new GameObject("FontDigit");
-        textGo.hideFlags = HideFlags.HideAndDontSave;
-        var tm = textGo.AddComponent<TextMesh>();
-        tm.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        textGo.GetComponent<MeshRenderer>().sharedMaterial = tm.font.material; // 代码创建必须手动挂字体材质
-        tm.fontSize = 100;
-        tm.characterSize = 1f;
-        tm.anchor = TextAnchor.MiddleCenter;
-        tm.alignment = TextAlignment.Center;
-        tm.color = Color.white;
-        tm.text = digit.ToString();
 
-        var camGo = new GameObject("FontCam");
-        camGo.hideFlags = HideFlags.HideAndDontSave;
-        var cam = camGo.AddComponent<Camera>();
-        cam.enabled = false;
-        cam.orthographic = true;
-        cam.orthographicSize = 8f;                        // 视野 16×16 单位，100px 字形绰绰有余
-        cam.nearClipPlane = 0.1f;
-        cam.farClipPlane = 50f;
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);  // 透明底：alpha 即字形覆盖度
-        cam.transform.position = new Vector3(0f, 0f, -3f); // 默认朝 +Z 看，正对文字
-
-        var rt = RenderTexture.GetTemporary(rtRes, rtRes, 24, RenderTextureFormat.ARGB32);
-        cam.targetTexture = rt;
-        cam.Render();
-        var prevActive = RenderTexture.active;
-        RenderTexture.active = rt;
-        var raw = new Texture2D(rtRes, rtRes, TextureFormat.RGBA32, false);
-        raw.ReadPixels(new Rect(0, 0, rtRes, rtRes), 0, 0);
-        raw.Apply();
-        RenderTexture.active = prevActive;
-        cam.targetTexture = null;
-        RenderTexture.ReleaseTemporary(rt);
-        Object.DestroyImmediate(camGo);
-        Object.DestroyImmediate(textGo);
-
-        // ---------- 2. 量墨迹包围盒（alpha > 0.1） ----------
-        var rawPx = raw.GetPixels();
-
-        // ---------- 2.5 擦除动态图集渗色伪影（横线 bug 修复，详见 RemoveArtifactBands） ----------
-        RemoveArtifactBands(rawPx, rtRes, digit);
-
-        int minX = rtRes, maxX = -1, minY = rtRes, maxY = -1;
-        for (int y = 0; y < rtRes; y++)
-            for (int x = 0; x < rtRes; x++)
-                if (rawPx[y * rtRes + x].a > 0.1f)
-                {
-                    if (x < minX) minX = x; if (x > maxX) maxX = x;
-                    if (y < minY) minY = y; if (y > maxY) maxY = y;
-                }
-        if (maxX < 0)
-        {
-            Debug.LogError($"MC3D_FONT_FAIL: digit {digit} 字形未渲染（TextMesh 无输出）");
-            // 兜底：返回纯深底贴图（游戏仍可运行，数字缺失待人工介入）
-            var fallback = new Texture2D(size, size);
-            var fb = new Color[size * size];
-            for (int i = 0; i < fb.Length; i++) fb[i] = new Color(0.045f, 0.06f, 0.115f);
-            fallback.SetPixels(fb); fallback.Apply();
-            return fallback;
-        }
-        int inkW = maxX - minX + 1, inkH = maxY - minY + 1;
-
-        // ---------- 3. 重采样墨迹区域 → 70% 高度、等比宽、居中放入 512² ----------
-        int targetH = (int)(size * 0.70f);           // 358
-        int targetW = Mathf.Max(1, Mathf.RoundToInt(inkW * (float)targetH / inkH));
-        int dstX = (size - targetW) / 2, dstY = (size - targetH) / 2;
-        var mask = new float[size * size];              // 重采样后的 alpha 遮罩（0..1）
-        for (int ty = 0; ty < targetH; ty++)
-        {
-            int sy = minY + (int)((ty + 0.5f) * inkH / targetH);
-            for (int tx = 0; tx < targetW; tx++)
-            {
-                int sx = minX + (int)((tx + 0.5f) * inkW / targetW);
-                mask[(dstY + ty) * size + (dstX + tx)] = rawPx[sy * rtRes + sx].a;
-            }
-        }
-        Debug.Log($"MC3D_DIGIT_CENTER value={digit} inkBox={inkW}x{inkH} dst=({dstX},{dstY}) " +
-                  $"center=({dstX + targetW / 2f - (size - 1) / 2f:F1},{dstY + targetH / 2f - (size - 1) / 2f:F1})px");
-
-        // ---- 遮罩两级模糊 → 霓虹光晕（假Bloom，零运行时成本） ----
-        var halo1 = BoxBlur(mask, size, 18);
-        var halo2 = BoxBlur(mask, size, 44);
-
-        // ---- 合成：深底 + 细环 + 光晕 + 过曝字芯 ----
+        // ---- 合成：深底 + 微噪 + 光池 + 细环 ----
         var px = new Color[size * size];
         var deepBase = new Color(0.045f, 0.06f, 0.115f);
         for (int y = 0; y < size; y++)
@@ -368,14 +282,20 @@ public static class SceneBuilder
                 // 1) 深底 + 微噪
                 Color col = deepBase * (1f + (Mathf.PerlinNoise(x * 0.3f, y * 0.3f) - 0.5f) * 0.10f);
 
-                // 2) 同色细环（r=0.40，窄细、低亮度陪衬）
+                // 2) 光池（假 Bloom，与卡背霓虹环同款贴图技法，2026-09-23 批准）：
+                // 量纲核对：圆面 capUV 全贴图映射 → 512px=卡径；数字墨迹高 70%=±179px；
+                // 半径 0.42（归一化 0.5 坐标系）=215px——墨迹缘(179px)处 t≈0.43、alpha≈0.11，
+                // 笔画边缘也有淡光（用户选 0.42 而非 0.35 的原因）；细环 r=0.40 处 t≈0.95、
+                // alpha≈0.0008 已近零，环线不受影响。衰减 alpha=0.35×(1-t)²，峰值≈细环亮度的64%。
+                float poolT = r / 0.42f;
+                if (poolT < 1f)
+                {
+                    float poolA = 0.35f * (1f - poolT) * (1f - poolT);
+                    col += neon * poolA;
+                }
+
+                // 3) 同色细环（r=0.40，窄细、低亮度陪衬）
                 col = Color.Lerp(col, neon * 0.55f, Sstep(0.004f, 0f, Mathf.Abs(r - 0.40f)) * 0.75f);
-
-                // 3) 两级霓虹光晕（假Bloom）
-                col += neon * (halo1[i] * 0.42f + halo2[i] * 0.12f);
-
-                // 4) 字形本体：过曝霓虹芯（RT 渲染自带 AA，边缘天然平滑）
-                if (mask[i] > 0f) col = Color.Lerp(col, neon * 1.12f, mask[i]);
 
                 px[i] = col;
             }
@@ -385,76 +305,6 @@ public static class SceneBuilder
         tex.SetPixels(px);
         tex.Apply();
         return tex;
-    }
-
-    /// <summary>
-    /// 擦除动态字体图集渗色伪影（横线 bug 修复，2026-09-22）。
-    /// 现象：TextMesh 大字号渲染下，图集字形 UV 边界溢出采样会把相邻行的满 alpha 像素
-    /// 渗入 RT（实测：数字 5 中横下沿出现 4px 高、横贯数十 px 的水平条带，avgR≈254）。
-    /// 判据（三者同时满足才擦，物理上与真实笔画互斥）：
-    ///   ① alpha>0.9 的字芯连通域（与主笔画不连通）
-    ///   ② 域高度 ≤6px（100px 字号真实笔画厚度 8-15px，不可能这么扁）
-    ///   ③ 域宽度 ≥30px（排除孤立噪点）
-    /// 擦除后墨迹包围盒重新计量，居中数学与发光管线不受影响。
-    /// </summary>
-    private static void RemoveArtifactBands(Color[] px, int size, int digit)
-    {
-        // 1) 字芯掩码（alpha > 0.9）
-        bool[] core = new bool[px.Length];
-        for (int i = 0; i < px.Length; i++)
-            core[i] = px[i].a > 0.9f;
-
-        // 2) 连通域分析（4邻接 flood fill，栈迭代避免递归）
-        int[] label = new int[px.Length];
-        var regions = new System.Collections.Generic.List<System.Collections.Generic.List<int>>();
-        var stack = new System.Collections.Generic.Stack<int>();
-        for (int i = 0; i < px.Length; i++)
-        {
-            if (!core[i] || label[i] != 0) continue;
-            int regionId = regions.Count + 1;
-            var pixels = new System.Collections.Generic.List<int>();
-            stack.Push(i); label[i] = regionId;
-            while (stack.Count > 0)
-            {
-                int p = stack.Pop(); pixels.Add(p);
-                int px_ = p % size, py_ = p / size;
-                // 4邻接
-                if (px_ > 0 && core[p - 1] && label[p - 1] == 0) { stack.Push(p - 1); label[p - 1] = regionId; }
-                if (px_ < size - 1 && core[p + 1] && label[p + 1] == 0) { stack.Push(p + 1); label[p + 1] = regionId; }
-                if (py_ > 0 && core[p - size] && label[p - size] == 0) { stack.Push(p - size); label[p - size] = regionId; }
-                if (py_ < size - 1 && core[p + size] && label[p + size] == 0) { stack.Push(p + size); label[p + size] = regionId; }
-            }
-            regions.Add(pixels);
-        }
-
-        // 3) 找主域（像素数最多 = 数字笔画主体）
-        int mainIdx = 0;
-        for (int r = 1; r < regions.Count; r++)
-            if (regions[r].Count > regions[mainIdx].Count) mainIdx = r;
-
-        // 4) 擦除“细长水平伪影域”：非主域 + 高≤6 + 宽≥30
-        int removed = 0;
-        for (int r = 0; r < regions.Count; r++)
-        {
-            if (r == mainIdx) continue;
-            var pixels = regions[r];
-            int minX = size, maxX = -1, minY = size, maxY = -1;
-            foreach (int p in pixels)
-            {
-                int xx = p % size, yy = p / size;
-                if (xx < minX) minX = xx; if (xx > maxX) maxX = xx;
-                if (yy < minY) minY = yy; if (yy > maxY) maxY = yy;
-            }
-            int h = maxY - minY + 1, w = maxX - minX + 1;
-            if (h <= 6 && w >= 30)
-            {
-                removed++;
-                foreach (int p in pixels)
-                    px[p] = new Color(0f, 0f, 0f, 0f); // alpha 归零：不进墨迹盒、不进 mask、不发光
-            }
-        }
-        Debug.Log($"MC3D_ARTIFACT_REMOVED value={digit} regions={regions.Count} removed={removed} " +
-                  $"mainPixels={regions[mainIdx].Count}");
     }
 
     /// 从纹理中截取一个矩形区域（直接 GetPixels 失败时经 RT 中转兜底）
@@ -996,5 +846,104 @@ public static class SceneBuilder
 
         Debug.Log("MC3D_JEV_VERIFY_RESULT hasError=" + hasError + " isSuccess=" + isSuccess);
         Debug.Log("MC3D_JEV_VERIFY_DONE");
+    }
+
+    // ================= TMP 3D 数字方案（B 方案：根治动态图集渗色横线） =================
+
+    [MenuItem("Tools/MemoryCards3D/Import TMP Essentials")]
+    public static void ImportTmpEssentials()
+    {
+        Debug.Log("MC3D_TMP_IMPORT_START");
+
+        // 项目根 = Assets 的父目录
+        string projectRoot = System.IO.Directory.GetParent(Application.dataPath).FullName;
+        string pkgRelPath = "Library/PackageCache/com.unity.textmeshpro@3.0.6/Package Resources/TMP Essential Resources.unitypackage";
+        string pkgAbsPath = System.IO.Path.Combine(projectRoot, pkgRelPath).Replace('\\', '/');
+
+        Debug.Log("MC3D_TMP_IMPORT_PATH: " + pkgAbsPath);
+
+        if (!System.IO.File.Exists(pkgAbsPath))
+        {
+            Debug.LogError("MC3D_TMP_IMPORT_FAIL: package not found at " + pkgAbsPath);
+            return;
+        }
+
+        try
+        {
+            AssetDatabase.ImportPackage(pkgAbsPath, false);
+            AssetDatabase.Refresh();
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError("MC3D_TMP_IMPORT_FAIL: exception " + ex.Message);
+            return;
+        }
+
+        // 同步验证导入结果
+        string settingsPath = "Assets/TextMesh Pro/Resources/TMP Settings.asset";
+        string fontPath = "Assets/TextMesh Pro/Resources/Fonts & Materials/LiberationSans SDF.asset";
+        bool settingsOk = System.IO.File.Exists(System.IO.Path.Combine(projectRoot, settingsPath));
+        bool fontOk = System.IO.File.Exists(System.IO.Path.Combine(projectRoot, fontPath));
+
+        if (settingsOk && fontOk)
+            Debug.Log("MC3D_TMP_IMPORT_VERIFY: OK");
+        else
+            Debug.LogError($"MC3D_TMP_IMPORT_VERIFY: MISSING (settings={settingsOk}, font={fontOk})");
+
+        Debug.Log("MC3D_TMP_IMPORT_DONE");
+    }
+
+    /// TMP 数字发光材质：SDF shader + GLOW_ON，观感对标卡背霓虹灯管（贴图假Bloom 的同款效果）
+    private static Material CreateTmpDigitMaterial(int digit, Color color)
+    {
+        var shader = Shader.Find("TextMeshPro/Distance Field");
+        var mat = new Material(shader);
+        mat.SetColor(Shader.PropertyToID("_FaceColor"), Color.white);
+
+        // Glow：外扩光晕，色同数字（参数首跑后可按探针微调）
+        mat.EnableKeyword("GLOW_ON");
+        mat.SetColor(Shader.PropertyToID("_GlowColor"), new Color(color.r, color.g, color.b, 1f));
+        mat.SetFloat(Shader.PropertyToID("_GlowOffset"), 0.6f);
+        mat.SetFloat(Shader.PropertyToID("_GlowInner"), 0.15f);
+        mat.SetFloat(Shader.PropertyToID("_GlowOuter"), 0.45f);
+        mat.SetFloat(Shader.PropertyToID("_GlowPower"), 0.75f);
+
+        string matPath = $"{ArtDir}/CardFaceTmpMat_{digit}.mat";
+        AssetDatabase.CreateAsset(mat, matPath); // 材质必须落盘为资产，场景实例引用才持久
+        Debug.Log($"MC3D_TMP_MATERIAL_CREATED value={digit} color=({color.r:F2},{color.g:F2},{color.b:F2}) path={matPath}");
+        return mat;
+    }
+
+    /// 给卡片实例挂 TMP 3D 数字子物体（B 方案核心）：数字=卡值、三档配色、浮高 2mm 防 Z-fighting。
+    /// 翻牌为刚性 Slerp 旋转，子物体随父级转动（翻到背面数字面朝下，天然不可见），Card.cs 零改动。
+    private static void AttachTmpDigitToCard(GameObject card, int digit)
+    {
+        Color neon = digit <= 3 ? new Color(0.05f, 0.85f, 1.00f)
+                  : digit <= 6 ? new Color(1.00f, 0.25f, 0.80f)
+                  : new Color(1.00f, 0.76f, 0.22f);
+
+        var go = new GameObject("TmpDigit");
+        go.transform.SetParent(card.transform, false);
+        go.transform.localPosition = new Vector3(0f, 0.022f, 0f);        // 卡顶面(y=+0.02)上方 2mm
+        // 推导（写码前必推）：相机 Euler(90,0,0) 俯视 → 屏幕上方=+Z、右方=+X。
+        // 绕X -90° 字面朝 +Y 但字倒立(up=-Z)；绕Z 180° 把 up 修到 +Z，但同时把 right 翻成 -X
+        // ——右手系字"面朝+Y 且 up=+Z"时 right 必为 -X，与相机右方(+X)相反 = 俯视镜像（手性冲突）。
+        // 纯旋转做不到"朝上+正立+不镜像"，必须 localScale.x=-1 翻手性抵消。
+        go.transform.localRotation = Quaternion.Euler(-90f, 0f, 180f);
+        go.transform.localScale = new Vector3(-1f, 1f, 1f);             // 抵消俯视镜像；TMP 是 2D 文字 shader，负 scale 不影响光照
+
+        var tmp = go.AddComponent<TMPro.TextMeshPro>();
+        tmp.text = digit.ToString();
+        tmp.font = TMPro.TMP_Settings.defaultFontAsset;                   // Essentials 的 LiberationSans SDF
+        // 量纲核对（实测系数，写码前必算）：fontSize 单位=点，1点≈0.1单位行高，
+        // 数字墨迹高（cap高度）≈ fontSize × 0.07 单位（0.1×cap比0.7，第1轮实测50%卡径吻合）。
+        // 目标 = 卡径 0.7 × 70% = 0.49 单位 → fontSize = 0.49 / 0.07 ≈ 7
+        tmp.fontSize = 7f;
+        tmp.alignment = TMPro.TextAlignmentOptions.Center;                // 水平+垂直双居中
+        tmp.color = neon;
+        tmp.raycastTarget = false;                                        // 不挡卡片 OnMouseDown 物理射线
+        tmp.fontSharedMaterial = CreateTmpDigitMaterial(digit, neon);
+
+        Debug.Log($"MC3D_TMP_DIGIT_ATTACHED value={digit} pos=(0,0.022,0) rot=(-90,0,180) scale=(-1,1,1) fontSize=7");
     }
 }
