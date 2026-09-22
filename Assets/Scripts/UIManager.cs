@@ -125,7 +125,7 @@ public class UIManager : MonoBehaviour
         return go;
     }
 
-    private Text CreateText(Transform parent, string initial, int size, Vector2 pos, FontStyle style, bool cyanGlow = false)
+    private Text CreateText(Transform parent, string initial, int size, Vector2 pos, FontStyle style, bool glow = false, Color glowColor = default(Color))
     {
         var go = new GameObject("Txt_" + initial, typeof(Text));
         var t = go.GetComponent<Text>();
@@ -137,14 +137,15 @@ public class UIManager : MonoBehaviour
         t.text = initial;
         t.raycastTarget = false;                   // 文字也不挡点击
 
-        // Block4 青色柔光晕：内层集中、外层弥散，两层 Shadow 叠出"灯管"感
-        if (cyanGlow)
+        // Block4/5 文字光晕：内层集中、外层弥散，两层 Shadow 叠出"灯管"感（默认青，胜利文字传金）
+        if (glow)
         {
+            Color c = glowColor == default(Color) ? new Color(0.05f, 0.85f, 1.00f, 1f) : glowColor;
             var inner = go.AddComponent<UnityEngine.UI.Shadow>();
-            inner.effectColor = new Color(0.05f, 0.85f, 1.00f, 0.45f);
+            inner.effectColor = new Color(c.r, c.g, c.b, 0.45f);
             inner.effectDistance = new Vector2(1.5f, -1.5f);
             var outer = go.AddComponent<UnityEngine.UI.Shadow>();
-            outer.effectColor = new Color(0.05f, 0.85f, 1.00f, 0.20f);
+            outer.effectColor = new Color(c.r, c.g, c.b, 0.20f);
             outer.effectDistance = new Vector2(3.5f, -3.5f);
         }
 
@@ -159,10 +160,11 @@ public class UIManager : MonoBehaviour
 
     private void BuildVictoryPanel(Transform parent)
     {
-        // ---- 遮罩 ----
+        // ---- 遮罩：金色径向渐变 + 烘焙星点（Block5 运行时程序生成，零持续成本）----
         var panel = new GameObject("VictoryPanel", typeof(Image));
         var img = panel.GetComponent<Image>();
-        img.color = new Color(0f, 0f, 0f, 0.78f);  // 深色遮罩盖住场景，突出胜利信息
+        img.sprite = MakeVictoryBackdrop();
+        img.color = Color.white;                   // 渐变与透明度都烘焙在贴图里
         img.raycastTarget = true;                  // 遮罩挡住残余的卡片点击
 
         var rect = panel.GetComponent<RectTransform>();
@@ -171,8 +173,8 @@ public class UIManager : MonoBehaviour
         rect.anchorMax = Vector2.one;              // 全屏拉伸
         rect.offsetMin = rect.offsetMax = Vector2.zero;
 
-        // ---- 获胜大字（金色） ----
-        _victoryText = CreateText(panel.transform, "Player 1 Wins!", 72, new Vector2(0, -330), FontStyle.Bold);
+        // ---- 获胜大字（金色 + 金色光晕，Block5） ----
+        _victoryText = CreateText(panel.transform, "Player 1 Wins!", 72, new Vector2(0, -330), FontStyle.Bold, true, new Color(1f, 0.84f, 0.35f, 1f));
         _victoryText.color = new Color(1f, 0.84f, 0.4f);
 
         // ---- 再来一局按钮 ----
@@ -197,5 +199,45 @@ public class UIManager : MonoBehaviour
 
         panel.SetActive(false);
         _victoryPanel = panel;
+    }
+
+    /// Block5 标题呼吸：小幅度（±3%）、1.5 秒周期，只在胜利面板激活时生效
+    private void Update()
+    {
+        if (_victoryPanel == null || !_victoryPanel.activeSelf) return;
+        float s = 1f + Mathf.Sin(Time.time * (Mathf.PI * 2f / 1.5f)) * 0.03f;
+        _victoryText.transform.localScale = new Vector3(s, s, 1f);
+    }
+
+    /// Block5 胜利背景：512² 金色径向渐变 + 固定种子烘焙星点（程序生成，确定性）
+    private Sprite MakeVictoryBackdrop()
+    {
+        const int s = 512;
+        var tex = new Texture2D(s, s, TextureFormat.RGBA32, false);
+        var px = new Color[s * s];
+        var goldCore = new Color(1.00f, 0.84f, 0.35f, 0.92f); // 中心金亮
+        var goldEdge = new Color(0.10f, 0.06f, 0.03f, 0.90f); // 边缘深棕黑
+        var rng = new System.Random(20260922);                 // 固定种子：星点位置跨局一致
+        var stars = new Vector2[24];
+        for (int i = 0; i < stars.Length; i++)
+            stars[i] = new Vector2((float)rng.NextDouble(), (float)rng.NextDouble());
+        for (int y = 0; y < s; y++)
+            for (int x = 0; x < s; x++)
+            {
+                float u = x / (float)(s - 1) - 0.5f, v = y / (float)(s - 1) - 0.5f;
+                float r = Mathf.Sqrt(u * u + v * v) * 2f;
+                Color col = Color.Lerp(goldCore, goldEdge, Mathf.Clamp01(r * 0.85f));
+                for (int st = 0; st < stars.Length; st++)
+                {
+                    float dx = u - (stars[st].x - 0.5f), dy = v - (stars[st].y - 0.5f);
+                    float d = Mathf.Sqrt(dx * dx + dy * dy);
+                    const float starR = 0.006f;
+                    if (d < starR) col += new Color(1f, 0.9f, 0.6f, 0f) * (1f - d / starR) * 0.6f;
+                }
+                px[y * s + x] = col;
+            }
+        tex.SetPixels(px);
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, s, s), new Vector2(0.5f, 0.5f), 512f);
     }
 }
