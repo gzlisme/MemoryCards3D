@@ -56,9 +56,10 @@ public class UIManager : MonoBehaviour
         var bar = CreateBar(canvas.transform);
 
         // 三行文字：回合（最大最显眼） / 期待数字 / 连对计数
-        _turnText = CreateText(bar.transform, "Player 1's Turn", 46, new Vector2(0, -46), FontStyle.Bold);
-        _expectText = CreateText(bar.transform, "Find: 1", 34, new Vector2(0, -104), FontStyle.Normal);
-        _countText = CreateText(bar.transform, "Streak: 0/9", 30, new Vector2(0, -146), FontStyle.Normal);
+        // Block4 青光晕：双层 Shadow 叠出柔光（零运行时成本，组件属性预烘焙）
+        _turnText = CreateText(bar.transform, "Player 1's Turn", 46, new Vector2(0, -46), FontStyle.Bold, true);
+        _expectText = CreateText(bar.transform, "Find: 1", 34, new Vector2(0, -104), FontStyle.Normal, true);
+        _countText = CreateText(bar.transform, "Streak: 0/9", 30, new Vector2(0, -146), FontStyle.Normal, true);
 
         // ===== 胜利面板：全屏遮罩 + 大字 + 再来一局按钮（默认隐藏） =====
         BuildVictoryPanel(canvas.transform);
@@ -108,10 +109,23 @@ public class UIManager : MonoBehaviour
         rect.pivot = new Vector2(0.5f, 1f);
         rect.anchoredPosition = new Vector2(0, -10);
         rect.sizeDelta = new Vector2(0, 210);     // 宽=锚点区间撑满，高210
+
+        // Block4 青色顶边线：压在底板下沿，与卡背霓虹环同色系（青→品红渐变感由青线+文字品红点缀）
+        var lineGo = new GameObject("BarAccentLine", typeof(Image));
+        var lineRect = lineGo.GetComponent<RectTransform>();
+        lineRect.SetParent(go.transform, false);
+        lineRect.anchorMin = new Vector2(0f, 0f);   // 底板下沿全宽
+        lineRect.anchorMax = new Vector2(1f, 0f);
+        lineRect.pivot = new Vector2(0.5f, 0f);
+        lineRect.anchoredPosition = Vector2.zero;
+        lineRect.sizeDelta = new Vector2(0, 3);    // 3px 细线
+        var lineImg = lineGo.GetComponent<Image>();
+        lineImg.color = new Color(0.05f, 0.85f, 1.00f, 0.85f); // 霓虹青
+        lineImg.raycastTarget = false;
         return go;
     }
 
-    private Text CreateText(Transform parent, string initial, int size, Vector2 pos, FontStyle style)
+    private Text CreateText(Transform parent, string initial, int size, Vector2 pos, FontStyle style, bool cyanGlow = false)
     {
         var go = new GameObject("Txt_" + initial, typeof(Text));
         var t = go.GetComponent<Text>();
@@ -122,6 +136,17 @@ public class UIManager : MonoBehaviour
         t.color = Color.white;
         t.text = initial;
         t.raycastTarget = false;                   // 文字也不挡点击
+
+        // Block4 青色柔光晕：内层集中、外层弥散，两层 Shadow 叠出"灯管"感
+        if (cyanGlow)
+        {
+            var inner = go.AddComponent<UnityEngine.UI.Shadow>();
+            inner.effectColor = new Color(0.05f, 0.85f, 1.00f, 0.45f);
+            inner.effectDistance = new Vector2(1.5f, -1.5f);
+            var outer = go.AddComponent<UnityEngine.UI.Shadow>();
+            outer.effectColor = new Color(0.05f, 0.85f, 1.00f, 0.20f);
+            outer.effectDistance = new Vector2(3.5f, -3.5f);
+        }
 
         var rect = go.GetComponent<RectTransform>();
         rect.SetParent(parent, false);
