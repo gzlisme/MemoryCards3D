@@ -308,6 +308,10 @@ public static class SceneBuilder
 
         // ---------- 2. 量墨迹包围盒（alpha > 0.1） ----------
         var rawPx = raw.GetPixels();
+
+        // ---------- 2.5 擦除动态图集渗色伪影（横线 bug 修复，详见 RemoveArtifactBands） ----------
+        RemoveArtifactBands(rawPx, rtRes, digit);
+
         int minX = rtRes, maxX = -1, minY = rtRes, maxY = -1;
         for (int y = 0; y < rtRes; y++)
             for (int x = 0; x < rtRes; x++)
@@ -381,6 +385,76 @@ public static class SceneBuilder
         tex.SetPixels(px);
         tex.Apply();
         return tex;
+    }
+
+    /// <summary>
+    /// 擦除动态字体图集渗色伪影（横线 bug 修复，2026-09-22）。
+    /// 现象：TextMesh 大字号渲染下，图集字形 UV 边界溢出采样会把相邻行的满 alpha 像素
+    /// 渗入 RT（实测：数字 5 中横下沿出现 4px 高、横贯数十 px 的水平条带，avgR≈254）。
+    /// 判据（三者同时满足才擦，物理上与真实笔画互斥）：
+    ///   ① alpha>0.9 的字芯连通域（与主笔画不连通）
+    ///   ② 域高度 ≤6px（100px 字号真实笔画厚度 8-15px，不可能这么扁）
+    ///   ③ 域宽度 ≥30px（排除孤立噪点）
+    /// 擦除后墨迹包围盒重新计量，居中数学与发光管线不受影响。
+    /// </summary>
+    private static void RemoveArtifactBands(Color[] px, int size, int digit)
+    {
+        // 1) 字芯掩码（alpha > 0.9）
+        bool[] core = new bool[px.Length];
+        for (int i = 0; i < px.Length; i++)
+            core[i] = px[i].a > 0.9f;
+
+        // 2) 连通域分析（4邻接 flood fill，栈迭代避免递归）
+        int[] label = new int[px.Length];
+        var regions = new System.Collections.Generic.List<System.Collections.Generic.List<int>>();
+        var stack = new System.Collections.Generic.Stack<int>();
+        for (int i = 0; i < px.Length; i++)
+        {
+            if (!core[i] || label[i] != 0) continue;
+            int regionId = regions.Count + 1;
+            var pixels = new System.Collections.Generic.List<int>();
+            stack.Push(i); label[i] = regionId;
+            while (stack.Count > 0)
+            {
+                int p = stack.Pop(); pixels.Add(p);
+                int px_ = p % size, py_ = p / size;
+                // 4邻接
+                if (px_ > 0 && core[p - 1] && label[p - 1] == 0) { stack.Push(p - 1); label[p - 1] = regionId; }
+                if (px_ < size - 1 && core[p + 1] && label[p + 1] == 0) { stack.Push(p + 1); label[p + 1] = regionId; }
+                if (py_ > 0 && core[p - size] && label[p - size] == 0) { stack.Push(p - size); label[p - size] = regionId; }
+                if (py_ < size - 1 && core[p + size] && label[p + size] == 0) { stack.Push(p + size); label[p + size] = regionId; }
+            }
+            regions.Add(pixels);
+        }
+
+        // 3) 找主域（像素数最多 = 数字笔画主体）
+        int mainIdx = 0;
+        for (int r = 1; r < regions.Count; r++)
+            if (regions[r].Count > regions[mainIdx].Count) mainIdx = r;
+
+        // 4) 擦除“细长水平伪影域”：非主域 + 高≤6 + 宽≥30
+        int removed = 0;
+        for (int r = 0; r < regions.Count; r++)
+        {
+            if (r == mainIdx) continue;
+            var pixels = regions[r];
+            int minX = size, maxX = -1, minY = size, maxY = -1;
+            foreach (int p in pixels)
+            {
+                int xx = p % size, yy = p / size;
+                if (xx < minX) minX = xx; if (xx > maxX) maxX = xx;
+                if (yy < minY) minY = yy; if (yy > maxY) maxY = yy;
+            }
+            int h = maxY - minY + 1, w = maxX - minX + 1;
+            if (h <= 6 && w >= 30)
+            {
+                removed++;
+                foreach (int p in pixels)
+                    px[p] = new Color(0f, 0f, 0f, 0f); // alpha 归零：不进墨迹盒、不进 mask、不发光
+            }
+        }
+        Debug.Log($"MC3D_ARTIFACT_REMOVED value={digit} regions={regions.Count} removed={removed} " +
+                  $"mainPixels={regions[mainIdx].Count}");
     }
 
     /// 从纹理中截取一个矩形区域（直接 GetPixels 失败时经 RT 中转兜底）
