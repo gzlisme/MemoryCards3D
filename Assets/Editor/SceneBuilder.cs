@@ -16,10 +16,10 @@ public static class SceneBuilder
     private const string ArtDir = "Assets/Art";
     private const string PrefabPath = "Assets/Prefabs/Card.prefab";
 
-    private const float TableWidth = 4.4f;        // 桌面 X 尺寸
-    private const float TableDepth = 3.2f;        // 桌面 Z 尺寸
-    private const float TableThickness = 0.08f;    // 桌面板真实厚度
-    private const float CameraOrthoSize = 1.75f;   // 正交相机半高
+    private const float MatWidth = 3.5f;           // 野餐垫 X 尺寸（铺满竖屏 FOV 宽 2.7 + 余量）
+    private const float MatDepth = 7.0f;           // 野餐垫 Z 尺寸（覆盖竖屏 FOV 高最大 6.0 @9:20）
+    private const float MatThickness = 0.005f;     // 垫厚：几乎贴地
+    private const float CameraOrthoSize = 2.5f;   // 竖屏正交相机半高【占位值】：运行时由 CameraController 按 Screen 宽高比动态计算（ortho=2.7/(2×aspect)），此处仅编辑态预览
 
     private const float CardRadius = 0.35f;        // 卡片半径（圆柱 XZ 缩放）
     private const float CardThickness = 0.04f;     // 卡片厚度：必须真实厚度，不能拿平面糊弄
@@ -36,6 +36,7 @@ public static class SceneBuilder
 
         BuildFoundation();
         BuildCards();
+        BuildFruitPlayers();
 
         // 运行时管理器也一并放进场景（脚本存在才加，保证分阶段开发时本工具始终能跑）
         TryAddManagerObject("GameManager");
@@ -48,7 +49,7 @@ public static class SceneBuilder
         Debug.Log("MC3D_BUILD_OK: scene saved to " + ScenePath);
     }
 
-    // ================= 地基：地板 / 课桌 / 相机 / 灯光 =================
+    // ================= 地基：地板 / 野餐垫 / 相机 / 灯光 =================
 
     private static void BuildFoundation()
     {
@@ -62,13 +63,19 @@ public static class SceneBuilder
         floor.GetComponent<MeshRenderer>().shadowCastingMode =
             UnityEngine.Rendering.ShadowCastingMode.Off; // 地板不投影，省性能
 
-        // ---------- 课桌：带真实厚度的木板桌面 ----------
+        // ---------- 野餐垫：铺满整个视野的薄垫（竖屏手机版背景，替代旧木桌） ----------
         var table = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        table.name = "Table";
-        // Cube 本体 1x1x1，靠缩放得到真实尺寸；位置让“桌面顶面”正好落在 y=0
-        table.transform.localScale = new Vector3(TableWidth, TableThickness, TableDepth);
-        table.transform.position = new Vector3(0f, -TableThickness * 0.5f, 0f);
-        table.GetComponent<MeshRenderer>().sharedMaterial = CreateArenaMaterial();
+        table.name = "PicnicMat";
+        // 量纲推导（写码前必算）：
+        // - 竖屏 FOV 宽 2.7（相机公式），高最大 6.0（9:20 宽高比 0.45×）
+        // - 垫 3.5×7.0 带余量覆盖所有目标宽高比，正交相机零露馅
+        // - 卡片底 y=0 恰躺垫面；垫顶微沉 -0.001（pos -0.0035+厚/2 0.0025），与卡底差 1mm，彻底消除 Z-fighting 共面闪烁
+        // - 投影关闭：消除旧"顶部黑长条"（桌子投地板的阴影）；receiveShadows 保持开，卡片影子照常落在垫上
+        table.transform.localScale = new Vector3(MatWidth, MatThickness, MatDepth);
+        table.transform.position = new Vector3(0f, -MatThickness * 0.5f - 0.001f, 0f);
+        var tableR = table.GetComponent<MeshRenderer>();
+        tableR.sharedMaterial = CreatePicnicMat();
+        tableR.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
         // ---------- 相机：固定正交俯视 ----------
         var camGo = new GameObject("MainCamera");
@@ -76,7 +83,7 @@ public static class SceneBuilder
         var cam = camGo.AddComponent<Camera>();
         camGo.AddComponent<AudioListener>();   // 一个场景只要一个声音监听器
         var ctrl = camGo.AddComponent<CameraController>();
-        ctrl.OrthoSize = CameraOrthoSize;
+        ctrl.EdgePadding = 0.3f;  // 竖屏动态视野参数（卡片区 2.4 + 边距 0.3 = FOV 宽 2.7）
         // 运行时由 CameraController 强制锁定；这里也摆一次，让“编辑态”看场景就是对的
         camGo.transform.position = new Vector3(0f, 4.2f, 0f);
         camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
@@ -520,55 +527,59 @@ public static class SceneBuilder
 
     // ================= 通用小工具 =================
 
-    /// 竞技场桌面贴图：深蓝紫径向渐变 + 细网格线 + 淡冷色纤维痕 + 暗角（视觉升级：数字竞技场风）
-    private static Material CreateArenaMaterial()
+    /// 野餐垫贴图：黄白维希格纹（三色：白/浅黄/深黄交叉）+ 轻布噪，铺满全屏背景。
+    /// 量纲推导（写码前必算，2026-09-24 密度加密 8×16→16×32）：垫 3.5(X)×7.0(Z)，X:Z=1:2；
+    /// 贴图 1024²、X 16 格（每格 64px）/ Z 32 格（每格 32px）→ 世界格边 3.5/16 = 7.0/32 = 0.21875
+    /// （正方形格：贴图格 X:Z=64:32px 被 UV 拉伸到 X:Z=1:2 的垫面后恰成正方形）；
+    /// 屏幕格边 ≈87px ≈ 卡径的 1/8（旧 175px 偏"粗糙"，加密后 4 倍密度细密）。
+    /// 格缘半像素 Sstep 抗锯齿（X/Z 像素密度不同，各自 aa）；维希图案 = 竖浅黄带 × 横白带，交叉深黄。
+    private static Material CreatePicnicMat()
     {
-        const int size = 512;
-        var tex = new Texture2D(size, size);
-        var pixels = new Color[size * size];
-        var coreCol = new Color(0.22f, 0.13f, 0.48f);  // 中心：紫罗兰（提亮版，光照后紫色相清晰可读）
-        var edgeCol = new Color(0.035f, 0.05f, 0.13f); // 边缘：近黑蓝
+        const int size = 1024;
+        const float cellsX = 16f;  // X 方向格数（垫 3.5 宽 → 世界格边 3.5/16 = 0.21875）
+        const float cellsZ = 32f;  // Z 方向格数（垫 7.0 深 → 世界格边 7.0/32 = 0.21875）
+        const float aaX = 0.5f * cellsX / size;  // 半像素（格单位）：0.5×16/1024 = 0.0078
+        const float aaZ = 0.5f * cellsZ / size;  // 0.5×32/1024 = 0.0156
+        var white = new Color(1.00f, 1.00f, 1.00f);
+        var lightYellow = new Color(0.98f, 0.91f, 0.49f); // #FBE87E
+        var deepYellow = new Color(0.88f, 0.75f, 0.16f);  // #E0C028
 
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var px = new Color[size * size];
         for (int y = 0; y < size; y++)
         {
+            float fz = (y + 0.5f) / size * cellsZ;
+            float cz = 2f * Mathf.Floor(fz * 0.5f) + 0.5f;   // 最近横带中心
+            float wz = 1f - Sstep(0.5f - aaZ, 0.5f + aaZ, Mathf.Abs(fz - cz));
             for (int x = 0; x < size; x++)
             {
-                float u = x / (float)(size - 1) - 0.5f;
-                float v = y / (float)(size - 1) - 0.5f;
-                float dist = Mathf.Sqrt(u * u + v * v);
+                float fx = (x + 0.5f) / size * cellsX;
+                float cx = 2f * Mathf.Floor(fx * 0.5f) + 0.5f;   // 最近竖带中心
+                float wx = 1f - Sstep(0.5f - aaX, 0.5f + aaX, Mathf.Abs(fx - cx));
 
-                // 1) 径向渐变：中心偏亮的紫，向边缘压到深蓝黑
-                Color col = Color.Lerp(coreCol, edgeCol, Mathf.Clamp01(dist * 1.7f));
-
-                // 2) 淡冷色纤维痕：沿X极拉伸的微噪声（保留一点旧木纹的质感层，几乎不可见）
-                col *= 1f + (Mathf.PerlinNoise(u * 4f, v * 40f) - 0.5f) * 0.06f;
-
-                // 3) 细网格线：每32px一条、2px宽；对比度按深底可见性校准（探针迭代2）
-                if (x % 32 == 0 || x % 32 == 1 || y % 32 == 0 || y % 32 == 1)
-                    col += new Color(0.02f, 0.10f, 0.14f, 0f);
-
-                // 4) 暗角：四角再压暗，把视线收向中心
-                float vig = Mathf.Clamp01(dist - 0.42f) / 0.29f;
-                col *= 1f - vig * vig * 0.22f;
-
-                pixels[y * size + x] = col;
+                Color col = white;
+                col = Color.Lerp(col, lightYellow, Mathf.Max(wx, wz)); // 带区浅黄（竖或横）
+                col = Color.Lerp(col, deepYellow, wx * wz);            // 交叉点深黄
+                col *= 1f + (Mathf.PerlinNoise(x * 0.08f, y * 0.08f) - 0.5f) * 0.05f; // 布面微噪
+                px[y * size + x] = col;
             }
         }
-        tex.SetPixels(pixels);
+        tex.SetPixels(px);
         tex.Apply();
 
-        // 旧版木纹资产清理（风格更替，不留死资产）
-        foreach (string old in new[] { $"{ArtDir}/WoodTable.png", $"{ArtDir}/WoodTableMat.mat" })
+        // 旧竞技场桌面资产清理（风格更替，不留死资产；先例：木纹清理）。
+        // 此时新场景已重建、桌子材质已换 PicnicMatMat，旧引用不复存在，删除安全。
+        foreach (string old in new[] { $"{ArtDir}/ArenaDesk.png", $"{ArtDir}/ArenaDeskMat.mat" })
             if (AssetDatabase.LoadAssetAtPath<Object>(old) != null)
                 AssetDatabase.DeleteAsset(old);
 
-        string texPath = $"{ArtDir}/ArenaDesk.png";
+        string texPath = $"{ArtDir}/PicnicMat.png";
         File.WriteAllBytes(texPath, tex.EncodeToPNG());
         AssetDatabase.ImportAsset(texPath);
 
-        var mat = NewLitMaterial($"{ArtDir}/ArenaDeskMat.mat");
+        var mat = NewLitMaterial($"{ArtDir}/PicnicMatMat.mat");
         mat.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
-        mat.SetFloat("_Smoothness", 0.18f); // 微哑光，避免深色面反光变“塑料”
+        mat.SetFloat("_Smoothness", 0.05f); // 哑光布面
         AssetDatabase.SaveAssets();
         return mat;
     }
@@ -945,5 +956,174 @@ public static class SceneBuilder
         tmp.fontSharedMaterial = CreateTmpDigitMaterial(digit, neon);
 
         Debug.Log($"MC3D_TMP_DIGIT_ATTACHED value={digit} pos=(0,0.022,0) rot=(-90,0,180) scale=(-1,1,1) fontSize=7");
+    }
+
+    // ================= 水果玩家标记（Stage B：苹果/橙子圆片 + TMP 名字） =================
+
+    /// 水果圆片 mesh：单面三角扇，法线朝 +Y（俯视可见）。
+    /// 绕向按"逆时针=正面"铁律（从 +Y 往下看，Unity 可见面=顶点逆时针）。
+    /// UV 以贴图 (0.5,0.5) 为圆心、半径 0.5 的圆盘映射（与卡面顶面同法）。
+    /// 独立 mesh 不碰 CardMesh.asset；radius 为世界半径，由调用方量纲推算后传入。
+    private static Mesh BuildFruitDiscMesh(float radius, int segments = 48)
+    {
+        var verts = new List<Vector3>();
+        var uvs = new List<Vector2>();
+        var tris = new List<int>();
+
+        verts.Add(new Vector3(0f, 0f, 0f));               // 圆心
+        uvs.Add(new Vector2(0.5f, 0.5f));
+        for (int i = 0; i <= segments; i++)
+        {
+            float ang = i / (float)segments * Mathf.PI * 2f;
+            float x = Mathf.Cos(ang) * radius, z = Mathf.Sin(ang) * radius;
+            verts.Add(new Vector3(x, 0f, z));
+            uvs.Add(new Vector2(0.5f + Mathf.Cos(ang) * 0.5f, 0.5f + Mathf.Sin(ang) * 0.5f));
+        }
+        for (int i = 0; i < segments; i++)
+        {
+            // 顶视相机朝 -Y 看：从上往下看要逆时针。
+            // 世界 XZ 平面上 (cos,sin) 随 ang 增大逆时针（从+Y上方看）——扇形 (中心, i+1, i) 使正面朝上。
+            tris.AddRange(new[] { 0, i + 2, i + 1 });
+        }
+
+        var mesh = new Mesh { name = "FruitDisc" };
+        mesh.SetVertices(verts);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateNormals();   // 单面朝上
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+
+    /// 构建水果玩家标记：上苹果 / 下橙子。
+    /// 结构：FruitRoot（定位+TMP名字，不转）→ SpinGroup（圆片+贴图，转）。
+    /// 名字挂 FruitRoot 不挂 SpinGroup——否则随组自转，转到侧对相机时文字变薄线不可读。
+    /// 量纲推导（写码前必算）：
+    ///   贴图 500²、中心(250,250)；扫描不透明像素(alpha>0.1)到中心的最大距离=真实墨迹半径；
+    ///   圆片贴图空间半径需 ≥ 墨迹半径（墨迹全在圆内才不裁角），另加 5% 边距。
+    ///   世界直径 = clamp(0.6×玩家区高, 0.45, 0.8)：区高=(FOV高-2.4)/2，
+    ///   9:16 区高1.2→0.72 / 9:19.5 区高1.73→0.8 顶格 / iPad 3:4 区高0.6→0.45 保底。
+    ///   位置：玩家区中心 z=±(1.2+FOV高/2)/2，运行时由 FruitPlayer 按 aspect 算（编辑态摆 9:16 参考值）。
+    ///   名字：水果圆心正下方（z 向卡片区偏移），距圆片半径+0.15；TMP 3D 躺平
+    ///   Euler(-90,0,180)+scale(-1,1,1)（已验证防镜像公式），fontSize≈4（墨迹高≈0.28 单位）。
+    private static void BuildFruitPlayers()
+    {
+        string appleTexPath = $"{ArtDir}/apple.png";
+        string orangeTexPath = $"{ArtDir}/orange.png";
+        var appleTex = AssetDatabase.LoadAssetAtPath<Texture2D>(appleTexPath);
+        var orangeTex = AssetDatabase.LoadAssetAtPath<Texture2D>(orangeTexPath);
+        if (appleTex == null || orangeTex == null)
+        {
+            Debug.LogError("MC3D_FRUIT_FAIL: apple.png or orange.png not found in " + ArtDir);
+            return;
+        }
+
+        // 1) 扫描不透明像素最大半径（裁角安全判定）
+        float appleInk = MaxInkRadius(appleTex);
+        float orangeInk = MaxInkRadius(orangeTex);
+        Debug.Log($"MC3D_FRUIT_INK_RADIUS apple={appleInk:F0} orange={orangeInk:F0}");
+        if (appleInk > 250f || orangeInk > 250f)
+        {
+            Debug.LogError($"MC3D_FRUIT_FAIL: ink radius exceeds texture half-size (apple={appleInk:F0}, orange={orangeInk:F0}, limit 250)");
+            return;
+        }
+
+        // 2) 材质：URP Lit + 水果贴图 + Alpha Clip 四件套（属性+keyword 须在 CreateAsset 前设置才持久化）
+        //    贴图透明区 alpha=0 < _Cutoff 0.5 → 丢弃不渲染：黑圆底消失，水果直接躺在垫上
+        var appleMat = NewLitMaterial($"{ArtDir}/AppleDiscMat.mat");
+        appleMat.mainTexture = appleTex;
+        appleMat.SetFloat("_Smoothness", 0.10f);
+        appleMat.SetFloat("_Surface", 0f);      // Opaque（alpha 只用于裁切，不做半透明混合）
+        appleMat.SetFloat("_AlphaClip", 1f);    // Inspector 开关位
+        appleMat.EnableKeyword("_ALPHATEST_ON"); // ★ 真正生效的 shader keyword
+        appleMat.SetFloat("_Cutoff", 0.5f);     // 裁切阈值
+        var orangeMat = NewLitMaterial($"{ArtDir}/OrangeDiscMat.mat");
+        orangeMat.mainTexture = orangeTex;
+        orangeMat.SetFloat("_Smoothness", 0.10f);
+        orangeMat.SetFloat("_Surface", 0f);
+        orangeMat.SetFloat("_AlphaClip", 1f);
+        orangeMat.EnableKeyword("_ALPHATEST_ON");
+        orangeMat.SetFloat("_Cutoff", 0.5f);
+        AssetDatabase.SaveAssets();
+
+        // 3) 水果组组装：直径用 9:16 参考值 0.72（区高1.2×0.6），运行时 FruitPlayer 自适应
+        BuildFruit("Apple", appleTex, appleMat, appleInk, true);
+        BuildFruit("Orange", orangeTex, orangeMat, orangeInk, false);
+        Debug.Log("MC3D_STEP_OK: fruit players built");
+    }
+
+    /// 组装单个水果：FruitRoot(名/定位) → SpinGroup(圆片) ；编辑态 z 按 9:16 竖屏参考 ±1.8。
+    private static void BuildFruit(string name, Texture2D tex, Material mat, float inkRadius, bool top)
+    {
+        // 量纲：贴图空间墨迹半径 inkRadius(px) / 250(半边) = 世界半径基准比例；
+        // 世界直径 0.72（9:16 参考）→ 半径 0.36 → 圆内墨迹的世界半径 = 0.36×(ink/250)。
+        // 圆片 mesh 半径直接用 0.36（整圆），墨迹小于圆贴图自动带透明边。
+        const float refDiameter = 0.72f;   // 9:16 玖玩家区 1.2 × 60%
+        float refRadius = refDiameter * 0.5f;
+
+        var root = new GameObject("Fruit_" + name);
+        // 位置量纲（编辑态 9:16 参考）：FOV高 4.8 → 区中心 z = (1.2+2.4)/2 = 1.8；运行时由 FruitPlayer 重算。
+        float z = top ? 1.8f : -1.8f;
+        root.transform.position = new Vector3(0f, 0.02f, z);   // 贴垫面微浮 2mm（与卡片同高，防 Z-fighting）
+
+        // 挂运行时组件：自转/亮暗/按 aspect 自适应布局（PlayerNumber：上苹果=1，下橙子=2）
+        var fruitPlayer = root.AddComponent<FruitPlayer>();
+        fruitPlayer.PlayerNumber = top ? 1 : 2;   // SpinSpeed 默认 120°/s = 3 秒/圈
+
+        var spin = new GameObject("SpinGroup");
+        spin.transform.SetParent(root.transform, false);
+
+        var discGo = new GameObject("Disc", typeof(MeshFilter), typeof(MeshRenderer));
+        discGo.transform.SetParent(spin.transform, false);
+        var mesh = BuildFruitDiscMesh(refRadius);
+        string meshPath = $"{ArtDir}/FruitDisc_{name}.asset";
+        if (AssetDatabase.LoadAssetAtPath<Mesh>(meshPath) != null)
+            AssetDatabase.DeleteAsset(meshPath);
+        AssetDatabase.CreateAsset(mesh, meshPath);
+        AssetDatabase.SaveAssets();
+        discGo.GetComponent<MeshFilter>().sharedMesh = AssetDatabase.LoadAssetAtPath<Mesh>(meshPath);
+        var mr = discGo.GetComponent<MeshRenderer>();
+        mr.sharedMaterial = mat;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;   // 薄片不投怪影
+
+        // 名字显示已按用户决策移除（水果种类+亮暗自明，无需文字）
+
+        Debug.Log($"MC3D_FRUIT_BUILT name={name} top={top} inkRadius={inkRadius:F0} pos=(0,0.02,{z})");
+    }
+
+    /// 扫描贴图不透明像素(alpha>0.1)到贴图中心的最大距离（真实墨迹半径，px）。
+    private static float MaxInkRadius(Texture2D tex)
+    {
+        // Texture2D 需可读：AssetDatabase 导入的贴图默认可读性跟随导入设置；
+        // GetPixels 失败时经 RenderTexture 中转（复用 GrabTextureRegion 思路）。
+        Color[] px;
+        try { px = tex.GetPixels(); }
+        catch
+        {
+            var rt = RenderTexture.GetTemporary(tex.width, tex.height, 0);
+            var prev = RenderTexture.active;
+            Graphics.Blit(tex, rt);
+            RenderTexture.active = rt;
+            var t2 = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false);
+            t2.ReadPixels(new Rect(0, 0, tex.width, tex.height), 0, 0);
+            t2.Apply();
+            RenderTexture.active = prev;
+            px = t2.GetPixels();
+            Object.DestroyImmediate(t2);
+            RenderTexture.ReleaseTemporary(rt);
+        }
+        float cx = tex.width * 0.5f, cy = tex.height * 0.5f;
+        float best = 0f;
+        for (int y = 0; y < tex.height; y++)
+            for (int x = 0; x < tex.width; x++)
+            {
+                var c = px[y * tex.width + x];
+                if (c.a > 0.1f)
+                {
+                    float d = Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+                    if (d > best) best = d;
+                }
+            }
+        return best;
     }
 }

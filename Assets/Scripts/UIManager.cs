@@ -2,17 +2,15 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-/// UI管理器：
-/// 1) 顶部信息栏：当前玩家 / 请找数字 / 连对计数
+/// UI管理器（竖屏手机版·野餐风）：
+/// 1) 玩家标记 = 3D 水果圆片（FruitPlayer：上苹果/下橙子），本类只负责按回合驱动亮暗+自转
 /// 2) 胜利面板：遮罩 + 获胜玩家大字 + “再来一局”按钮
 /// 所有 UI 都在运行时用代码创建——不依赖场景里的序列化引用，重建场景也不怕“丢线”。
 /// 安卓适配：UI 文案为英文，统一使用引擎内置字体（LegacyRuntime.ttf，Arial 风格），
 /// 全平台显示一致，不再依赖 Windows 系统字体。
 public class UIManager : MonoBehaviour
 {
-    private Text _turnText;            // “玩家1回合”
-    private Text _expectText;          // “请找：3”
-    private Text _countText;           // “连对：2/9”
+    private FruitPlayer[] _fruitPlayers; // 水果玩家标记（上苹果/下橙子）：RefreshAll 驱动亮暗+自转
     private Text _victoryText;         // 胜利面板大字
     private GameObject _victoryPanel;  // 胜利面板整体（默认隐藏）
     private Button _restartButton;     // 再来一局按钮
@@ -34,6 +32,16 @@ public class UIManager : MonoBehaviour
         BuildUI();
     }
 
+    void Start()
+    {
+        // 水果玩家标记接线：查找所有 FruitPlayer 并按屏幕宽高比做一次自适应布局。
+        // 量纲：aspect = 宽/高（竖屏 ~0.45-0.56），FruitPlayer.Layout 内部用同一相机公式重算位置/直径。
+        _fruitPlayers = FindObjectsOfType<FruitPlayer>();
+        float aspect = (float)Screen.width / Screen.height;
+        foreach (var fp in _fruitPlayers)
+            fp.Layout(aspect);
+    }
+
     private void BuildUI()
     {
         // 事件系统：uGUI 点击事件的分发器。缺了它按钮永远收不到点击——
@@ -49,29 +57,24 @@ public class UIManager : MonoBehaviour
 
         var scaler = canvasGo.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920, 1080); // 以1080p为基准
-        scaler.matchWidthOrHeight = 1f; // Match Height：文字大小随屏高走，横屏手机各机型观感一致
-
-        // ===== 顶部信息底板（半透明压暗，保证文字可读性） =====
-        var bar = CreateBar(canvas.transform);
-
-        // 三行文字：回合（最大最显眼） / 期待数字 / 连对计数
-        // Block4 青光晕：双层 Shadow 叠出柔光（零运行时成本，组件属性预烘焙）
-        _turnText = CreateText(bar.transform, "Player 1's Turn", 46, new Vector2(0, -46), FontStyle.Bold, true);
-        _expectText = CreateText(bar.transform, "Find: 1", 34, new Vector2(0, -104), FontStyle.Normal, true);
-        _countText = CreateText(bar.transform, "Streak: 0/9", 30, new Vector2(0, -146), FontStyle.Normal, true);
+        scaler.referenceResolution = new Vector2(1080, 1920); // 竖屏参考分辨率（9:16 基准）
+        scaler.matchWidthOrHeight = 0f; // Match Width（竖屏短轴是宽）：字号随屏宽走，各机型观感一致
+        // 量纲核对：竖屏屏比 9:16~9:20，参考 1080×1920；MatchWidth 下 UI 宽度=屏宽、
+        // 高度按比例——56 号字在任何竖屏机型上视觉大小一致（横屏时代 MatchHeight 的镜像决策）
 
         // ===== 胜利面板：全屏遮罩 + 大字 + 再来一局按钮（默认隐藏） =====
         BuildVictoryPanel(canvas.transform);
     }
 
-    /// 刷新顶部三行信息（回合状态一变就由 GameManager 调用）
+    /// 刷新玩家标记亮/暗+自转（回合状态一变就由 GameManager 调用；接口不变，只读 CurrentPlayer）
     public void RefreshAll(GameManager gm)
     {
-        if (_turnText == null) return;
-        _turnText.text = "Player " + gm.CurrentPlayer + "'s Turn";
-        _expectText.text = "Find: " + gm.ExpectedNumber;
-        _countText.text = "Streak: " + gm.CorrectCount + "/" + GameManager.TotalCards;
+        if (gm == null) return;
+
+        // 驱动水果：当前回合的亮+转，等待的暗+停（FruitPlayer 内部处理 _BaseColor 与自转开关）
+        if (_fruitPlayers == null) return;
+        foreach (var fp in _fruitPlayers)
+            fp.SetTurn(fp.PlayerNumber == gm.CurrentPlayer);
     }
 
     /// 显示胜利画面（GameManager 判定胜利时调用，把自己传进来给按钮接线）
@@ -94,36 +97,6 @@ public class UIManager : MonoBehaviour
     public bool IsVictoryVisible => _victoryPanel != null && _victoryPanel.activeSelf;
 
     // ================= 私有搭建工具方法 =================
-
-    private GameObject CreateBar(Transform parent)
-    {
-        var go = new GameObject("TopBar", typeof(Image));
-        var img = go.GetComponent<Image>();
-        img.color = new Color(0f, 0f, 0f, 0.35f); // 半透明黑
-        img.raycastTarget = false;                // 底板绝不挡3D场景的卡片点击（重要！）
-
-        var rect = go.GetComponent<RectTransform>();
-        rect.SetParent(parent, false);
-        rect.anchorMin = new Vector2(0f, 1f);   // 顶边全宽（修复：原为0.5-1只覆盖右半屏，文字偏在75%屏宽处）
-        rect.anchorMax = new Vector2(1f, 1f);
-        rect.pivot = new Vector2(0.5f, 1f);
-        rect.anchoredPosition = new Vector2(0, -10);
-        rect.sizeDelta = new Vector2(0, 210);     // 宽=锚点区间撑满，高210
-
-        // Block4 青色顶边线：压在底板下沿，与卡背霓虹环同色系（青→品红渐变感由青线+文字品红点缀）
-        var lineGo = new GameObject("BarAccentLine", typeof(Image));
-        var lineRect = lineGo.GetComponent<RectTransform>();
-        lineRect.SetParent(go.transform, false);
-        lineRect.anchorMin = new Vector2(0f, 0f);   // 底板下沿全宽
-        lineRect.anchorMax = new Vector2(1f, 0f);
-        lineRect.pivot = new Vector2(0.5f, 0f);
-        lineRect.anchoredPosition = Vector2.zero;
-        lineRect.sizeDelta = new Vector2(0, 3);    // 3px 细线
-        var lineImg = lineGo.GetComponent<Image>();
-        lineImg.color = new Color(0.05f, 0.85f, 1.00f, 0.85f); // 霓虹青
-        lineImg.raycastTarget = false;
-        return go;
-    }
 
     private Text CreateText(Transform parent, string initial, int size, Vector2 pos, FontStyle style, bool glow = false, Color glowColor = default(Color))
     {

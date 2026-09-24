@@ -34,6 +34,15 @@ public static class RenderProbe
         Render(cam, "D:/work/unity/_android_visual/00_warmup_discard.png", 256);
         Render(cam, "D:/work/unity/_android_visual/03_face_overview.png", 2048);
 
+        // ---------- 2b. 竖屏手机版总览（Stage3c）：9:16 RT，ortho 用与 CameraController 相同公式 ----------
+        // 量纲：RT 1080×1920（aspect=0.5625）；ortho=(2.4+0.3)/(2×0.5625)=2.4；
+        // 预期画面：3×3 卡片区占满宽度、上下露出深底背景（玩家区位置）。
+        SetupCam(cam, new Vector3(0f, 4.2f, 0f), 2.4f);
+        cam.backgroundColor = new Color(0.08f, 0.08f, 0.12f, 1f); // 与 CameraController 竖屏底色一致
+        RenderPortrait(cam, "D:/work/unity/_android_visual/11_portrait_scene.png", 1080, 1920);
+        SetupCam(cam, new Vector3(0f, 4.2f, 0f), 1.75f); // 恢复横屏参数供后续特写使用
+        cam.backgroundColor = Color.black;
+
         // ---------- 3. 卡片5翻到正面朝上（游戏翻牌后玩家所见） ----------
         Card target = null;
         foreach (var c in Object.FindObjectsOfType<Card>())
@@ -90,15 +99,19 @@ public static class RenderProbe
 
     private static void Render(Camera cam, string path, int res)
     {
-        // 关键：Linear色彩空间项目里，RT必须按sRGB读写，截图才与Game视图所见一致；
-        // 否则PNG保存的是线性值，回看会系统性偏暗（视觉验收被误导）。
-        var rt = new RenderTexture(res, res, 24, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
+        RenderPortrait(cam, path, res, res);
+    }
+
+    /// 竖屏/任意宽高比渲染：非正方形 RT（宽=wpx 高=hpx），sRGB 读写与 Render 相同
+    private static void RenderPortrait(Camera cam, string path, int wpx, int hpx)
+    {
+        var rt = new RenderTexture(wpx, hpx, 24, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
         cam.targetTexture = rt;
         cam.Render();
         var prev = RenderTexture.active;
         RenderTexture.active = rt;
-        var tex = new Texture2D(res, res, TextureFormat.RGBA32, false);
-        tex.ReadPixels(new Rect(0, 0, res, res), 0, 0);
+        var tex = new Texture2D(wpx, hpx, TextureFormat.RGBA32, false);
+        tex.ReadPixels(new Rect(0, 0, wpx, hpx), 0, 0);
         tex.Apply();
         File.WriteAllBytes(path, tex.EncodeToPNG());
         RenderTexture.active = prev;
