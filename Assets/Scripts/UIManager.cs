@@ -80,7 +80,9 @@ public class UIManager : MonoBehaviour
     /// 显示胜利画面（GameManager 判定胜利时调用，把自己传进来给按钮接线）
     public void ShowVictory(int winnerPlayer, GameManager gm)
     {
-        _victoryText.text = "Player " + winnerPlayer + " Wins!";
+        // 玩家名映射（1=Apple 上 / 2=Orange 下，与 SceneBuilder.BuildFruit 对应）
+        string playerName = (winnerPlayer == 1) ? "Apple" : "Orange";
+        _victoryText.text = playerName + " Wins!";
         _victoryPanel.SetActive(true);
 
         // 先清空旧监听，防止重复注册；按钮点击 = 重开一局
