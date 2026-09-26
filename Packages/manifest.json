@@ -10,7 +10,7 @@
     "com.unity.timeline": "1.7.1",
     "com.unity.ugui": "1.0.0",
     "com.unity.visualscripting": "1.7.8",
-    "cn.tuanjie.codely.bridge": "file:../.codely.packages/cn.tuanjie.codely.bridge@1.0.85-785dea6a",
+    "cn.tuanjie.codely.bridge": "file:../.codely.packages/cn.tuanjie.codely.bridge@1.0.85-47f31100",
     "cn.tuanjie.ai.generators": "file:../.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators"
   }
 }
